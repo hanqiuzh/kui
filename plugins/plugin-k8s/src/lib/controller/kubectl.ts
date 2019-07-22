@@ -51,6 +51,8 @@ import { status as statusImpl } from './status'
 
 import repl = require('@kui-shell/core/core/repl')
 
+import events = require('events')
+
 const debug = Debug('k8s/controller/kubectl')
 debug('loading')
 
@@ -400,7 +402,7 @@ const executeLocally = (command: string) => (opts: EvaluatorArgs) =>
       resolve(val)
     }
 
-    const { spawn } = await import('child_process')
+    // const { spawn } = await import('child_process')
     delete env.DEBUG // don't pass this through to kubectl or helm; helm in particular emits crazy output
 
     await fillInTheBlanks(env || {})
@@ -408,10 +410,25 @@ const executeLocally = (command: string) => (opts: EvaluatorArgs) =>
     debug('kubeconfig', env.KUBECONFIG)
 
     const commandForSpawn = command === 'helm' ? await pickHelmClient(env) : command
-    const child = spawn(commandForSpawn, argvWithFileReplacements, {
+    /* const child = spawn(commandForSpawn, argvWithFileReplacements, {
       env,
       shell: true
-    })
+    }) */
+
+    const child = new events.EventEmitter()
+    debug('command before running:', `${commandForSpawn} ${argvWithFileReplacements.join(' ')}`)
+    repl
+      .qexec(`! ${commandForSpawn} ${argvWithFileReplacements.join(' ')}`, undefined, undefined, { raw: true })
+      .then(out => {
+        debug('outdata', out)
+        child.emit('outdata', out)
+        child.emit('close', 0)
+      })
+      .catch(err => {
+        debug('errdata', err)
+        child.emit('errdata', (err && err.message) || err)
+        child.emit('close', (err && err.code) || 500)
+      })
 
     const file = options.f || options.filename
     const hasFileArg = file !== undefined
@@ -421,17 +438,17 @@ const executeLocally = (command: string) => (opts: EvaluatorArgs) =>
     if (isProgrammatic) {
       const param = file.slice(1)
       debug('writing to stdin', param, programmaticResource)
-      child.stdin.write(programmaticResource + '\n')
-      child.stdin.end()
+      // child.stdin.write(programmaticResource + '\n') // this will fail
+      // child.stdin.end() // this will fail
     }
 
     let out = ''
-    child.stdout.on('data', data => {
+    child.on('outdata', data => {
       out += data.toString()
     })
 
     let err = ''
-    child.stderr.on('data', data => {
+    child.on('errdata', data => {
       err += data.toString()
     })
 

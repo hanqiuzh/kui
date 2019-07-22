@@ -228,13 +228,19 @@ const bcd = async ({ command, execOptions }: EvaluatorArgs) => {
   process.env.PWD = pwd
   return pwd
 }
-
+const dispatchToShellExec = async (args: EvaluatorArgs) => {
+  if (args && args.command && args.command.split(' ').length > 1 && args.command.split(' ')[0] === '!') {
+    args.command = args.command.substring(2)
+    debug('removing !:', args.command)
+  }
+  return dispatchToShell(args)
+}
 /**
  * Register command handlers
  *
  */
 export default (commandTree: CommandRegistrar) => {
-  commandTree.listen('/!', dispatchToShell, {
+  commandTree.listen('/!', dispatchToShellExec, {
     docs: 'Execute a UNIX shell command',
     noAuthOk: true,
     requiresLocal: true
