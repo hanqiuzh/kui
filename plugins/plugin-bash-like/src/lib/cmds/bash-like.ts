@@ -45,6 +45,7 @@ export const doExec = (
     // purposefully imported lazily, so that we don't spoil browser mode (where shell is not available)
 
     const proc = exec(cmdLine, {
+      shell: process.env._SHELL ? process.env._SHELL : undefined,
       env: Object.assign({}, process.env, execOptions['env'] || {})
     })
 

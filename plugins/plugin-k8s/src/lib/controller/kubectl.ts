@@ -416,7 +416,7 @@ const executeLocally = (command: string) => (opts: EvaluatorArgs) =>
     const commandForSpawn = command === 'helm' ? await pickHelmClient(env) : command
     const child = spawn(commandForSpawn, argvWithFileReplacements, {
       env,
-      shell: true
+      shell: process.env._SHELL ? process.env._SHELL : true
     })
 
     const file = options.f || options.filename

@@ -37,7 +37,7 @@ function getBasicInfo(releaseName: string): Promise<MetadataBearing> {
     const cmd = `${helm} get ${releaseName}`
     debug('cmd', cmd)
 
-    exec(cmd, (err, stdout, stderr) => {
+    exec(cmd, { shell: process.env._SHELL ? process.env._SHELL : undefined }, (err, stdout, stderr) => {
       if (stderr) {
         console.error(stderr)
       }
