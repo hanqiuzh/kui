@@ -21,7 +21,6 @@ import * as Debug from 'debug'
 import { respondToRepl } from '../util'
 import { Entity as EditorEntity, fetchEntity } from '../fetchers'
 import * as usage from '../../usage'
-import { lockIcon as defaultLock } from '../readonly'
 import { applyOverrides } from '../overrides'
 import { openEditor } from '../open'
 import { persisters } from '../persisters'
@@ -104,8 +103,7 @@ const editCmd = async ({
 
   // respond with a repl-compatible data model
   const custom = execOptions.custom
-  const lock =
-    (custom && custom.lock) || (entity.lock !== undefined ? entity.lock : entity.gotoReadonlyView || defaultLock)
+  const lock = (custom && custom.lock) || (entity.lock !== undefined ? entity.lock : entity.gotoReadonlyView)
   return respondToRepl(lock ? [lock] : [])(model)
 }
 

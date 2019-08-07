@@ -129,106 +129,71 @@ const bodyModel = (tab: Tab, resource: Resource): Row[] => {
   const pod = resource.resource
   const statuses = pod.status && pod.status.containerStatuses
 
-  const podName = repl.encodeComponent(pod.metadata.name)
-  const ns = repl.encodeComponent(pod.metadata.namespace)
+  const bodyModel: Row[] = pod.spec.containers
+    .map(container => {
+      const status = statuses && statuses.find(_ => _.name === container.name)
 
-  const bodyModel: Row[] = pod.spec.containers.map(container => {
-    const status = statuses && statuses.find(_ => _.name === container.name)
-    debug('container status', container.name, status.restartCount, status)
+      if (!status) {
+        // sometimes there is a brief period with no containerStatuses
+        // for a given container
+        return
+      }
 
-    const stateKey = Object.keys(status.state)[0]
-    const stateBody = status.state[stateKey]
+      debug('container status', container.name, status.restartCount, status)
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const statusAttrs: any[] = !status
-      ? []
-      : [
-          {
-            key: 'restartCount',
-            value: status.restartCount,
-            outerCSS: 'very-narrow'
-          },
-          {
-            key: 'ready',
-            value: status.ready,
-            fontawesome: status.ready ? 'fas fa-check-circle' : 'far fa-dot-circle',
-            css: status.ready ? 'green-text' : 'yellow-text'
-          },
-          {
-            key: 'state',
-            value: stateKey,
-            tag: 'badge',
-            outerCSS: 'capitalize',
-            css:
-              stateKey === 'running'
-                ? TrafficLight.Green
-                : stateKey === 'terminated'
-                ? TrafficLight.Red
-                : TrafficLight.Yellow,
-            watch: async () => {
-              // { value, done = false, css, onclick, others = [], unchanged = false, outerCSS }
-              const pod = await repl.qexec(`kubectl get pod ${podName} -n ${ns} -o json`, undefined, undefined, {
-                raw: true
-              })
+      const stateKey = Object.keys(status.state)[0]
+      const stateBody = status.state[stateKey]
 
-              const statuses = pod.status && pod.status.containerStatuses
-              const status = statuses && statuses.find(_ => _.name === container.name)
-              const stateKey = Object.keys(status.state)[0]
-              const stateBody = status.state[stateKey]
-              debug('watch', status, stateKey, pod)
-
-              const done = status.ready || stateKey === 'terminated'
-              const value = stateKey
-              const css =
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const statusAttrs: any[] = !status
+        ? []
+        : [
+            {
+              key: 'restartCount',
+              value: status.restartCount,
+              outerCSS: 'very-narrow'
+            },
+            {
+              key: 'ready',
+              value: status.ready,
+              fontawesome: status.ready ? 'fas fa-check-circle' : 'far fa-dot-circle',
+              css: status.ready ? 'green-text' : 'yellow-text'
+            },
+            {
+              key: 'state',
+              value: stateKey,
+              tag: 'badge',
+              outerCSS: 'capitalize',
+              css:
                 stateKey === 'running'
                   ? TrafficLight.Green
                   : stateKey === 'terminated'
                   ? TrafficLight.Red
                   : TrafficLight.Yellow
-              const others = [
-                {
-                  key: 'ready',
-                  value: status.ready,
-                  css: status.ready ? 'green-text' : 'yellow-text',
-                  fontawesome: status.ready ? 'fas fa-check-circle' : 'far fa-dot-circle'
-                },
-                {
-                  key: 'message',
-                  value: stateBody.startedAt || stateBody.reason
-                }
-              ]
-              debug('watch update', done, value, css, others)
-
-              return {
-                done,
-                value,
-                css,
-                others
-              }
+            },
+            {
+              key: 'message',
+              outerCSS: 'smaller-text not-too-wide',
+              value: stateBody.startedAt || stateBody.reason
             }
-          },
-          {
-            key: 'message',
-            outerCSS: 'smaller-text not-too-wide',
-            value: stateBody.startedAt || stateBody.reason
-          }
-        ]
+          ]
 
-    const portsAttr = {
-      key: 'ports',
-      outerCSS: 'not-too-wide',
-      value: (container.ports || []).map(({ containerPort, protocol }) => `${containerPort}/${protocol}`).join(' ')
-    }
+      const portsAttr = {
+        key: 'ports',
+        outerCSS: 'not-too-wide',
+        value: (container.ports || []).map(({ containerPort, protocol }) => `${containerPort}/${protocol}`).join(' ')
+      }
 
-    const specAttrs = [portsAttr]
+      const specAttrs = [portsAttr]
 
-    return {
-      type: 'container',
-      name: container.name,
-      onclick: showLogs(tab, { pod, container }),
-      attributes: specAttrs.concat(statusAttrs)
-    }
-  })
+      return {
+        type: 'container',
+        name: container.name,
+        onclick: showLogs(tab, { pod, container }),
+        attributes: specAttrs.concat(statusAttrs)
+      }
+    })
+    .filter(_ => _)
   debug('body model', bodyModel)
 
   return bodyModel
@@ -241,12 +206,28 @@ const bodyModel = (tab: Tab, resource: Resource): Row[] => {
 export const renderContainers = async (tab: Tab, command: string, resource: Resource) => {
   debug('renderContainers', command, resource)
 
-  return formatTable(tab, {
-    header: headerModel(resource),
-    body: bodyModel(tab, resource),
-    noSort: true,
-    title: 'Containers'
-  })
+  const fetchPod = `kubectl get pod ${repl.encodeComponent(resource.resource.metadata.name)} -n "${
+    resource.resource.metadata.namespace
+  }" -o json`
+  debug('issuing command', fetchPod)
+
+  try {
+    const podResource = await repl.qexec(fetchPod)
+    debug('renderContainers.response', podResource)
+
+    return formatTable(tab, {
+      header: headerModel(podResource),
+      body: bodyModel(tab, podResource),
+      noSort: true,
+      title: 'Containers'
+    })
+  } catch (err) {
+    if (err.code === 404) {
+      return formatTable(tab, { body: [] })
+    } else {
+      throw err
+    }
+  }
 }
 
 /**

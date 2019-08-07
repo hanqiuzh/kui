@@ -8,7 +8,7 @@ body[kui-theme-style] {
 
 body[kui-theme-style] sidecar .bx--tabs__nav-item--selected:not(.bx--tabs__nav-item--disabled) .bx--tabs__nav-link {
   color: var(--color-text-01);
-  border-bottom-color: var(--color-content-divider);
+  border-bottom-color: var(--color-brand-03);
   opacity: 1;
 }
 body[kui-theme-style="dark"] sidecar .bx--tabs__nav-item a.bx--tabs__nav-link {
@@ -26,47 +26,13 @@ body[kui-theme-style="dark"]
   border-bottom-color: var(--color-base05);
   opacity: 1;
 }
-sidecar .bx--tabs {
-  flex: 1;
-}
-sidecar .bx--tabs,
-sidecar .bx--tabs .bx--tabs__nav,
-sidecar .bx--tabs .bx--tabs__nav li {
-  width: unset;
-  min-height: unset;
-  position: unset;
-}
-sidecar a.bx--tabs__nav-link,
-sidecar a.bx--tabs__nav-link:active {
-  outline: none;
-  width: unset;
-  min-width: 6em;
-}
-li.bx--tabs__nav-item.sidecar-bottom-stripe-button,
-li.bx--tabs__nav-item.sidecar-bottom-stripe-button a {
-  flex: 1;
-}
 
 body[kui-theme-style] .bx--structured-list-th,
 body[kui-theme-style] .bx--structured-list-td {
   color: inherit;
 }
-body[kui-theme-style] .bx--link:not([href]) {
-  color: var(--color-brand-01);
-}
 
-body[kui-theme-style] .bx--link {
-  font-weight: 600;
-  color: var(--color-brand-01);
-  text-decoration: underline;
-  transition: 250ms;
-  pointer-events: unset;
-}
-body[kui-theme-style] .bx--link:hover {
-  color: var(--color-hover-primary-text);
-}
-
-/** breadcrumbs */
+/* breadcrumbs */
 body[kui-theme-style] .bx--breadcrumb {
   display: flex;
   flex-wrap: wrap;
@@ -79,6 +45,30 @@ body[kui-theme-style] .bx--breadcrumb-item .bx--link {
   font-size: 1em;
   text-decoration: none;
 }
-.bx--breadcrumb-item::after {
+[kui-theme-style] .bx--breadcrumb-item::after {
   color: var(--color-text-02);
+}
+
+/* structured list */
+[kui-theme-style] .bx--structured-list-row.bx--structured-list-row--header-row,
+[kui-theme-style] .bx--structured-list-row {
+  border-bottom-color: var(--color-content-divider);
+}
+
+/* buttons */
+[kui-theme-style] .bx--btn--primary {
+  background-color: var(--color-base0D);
+  color: var(--color-text-01);
+}
+[kui-theme-style] .bx--btn--primary:hover {
+  background-color: var(--color-base0D);
+  filter: contrast(1.25);
+}
+[kui-theme-style] .bx--btn--secondary {
+  background-color: var(--color-ui-03);
+  color: var(--color-text-01);
+}
+[kui-theme-style] .bx--btn--secondary:hover {
+  background-color: var(--color-ui-03);
+  filter: contrast(0.75);
 }

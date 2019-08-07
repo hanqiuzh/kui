@@ -17,6 +17,7 @@
 import * as common from '@kui-shell/core/tests/lib/common'
 import { cli, selectors, sidecar } from '@kui-shell/core/tests/lib/ui'
 import {
+  assertTableTitleMatches,
   waitForGreen,
   waitForRed,
   defaultModeForGet,
@@ -29,7 +30,7 @@ import assert = require('assert')
 
 const synonyms = ['kubectl']
 
-describe('electron get pod', function(this: common.ISuite) {
+describe(`electron get pod ${process.env.MOCHA_RUN_TARGET}`, function(this: common.ISuite) {
   before(common.before(this))
   after(common.after(this))
 
@@ -45,8 +46,7 @@ describe('electron get pod', function(this: common.ISuite) {
       await this.app.client.waitForExist(table)
 
       if (!fast) {
-        const tableTitle = await this.app.client.getText(`${table} .result-table-title`)
-        assert.strictEqual(tableTitle.toLowerCase(), 'containers')
+        await assertTableTitleMatches(this, table, 'containers')
       }
 
       // check the conditions rows
@@ -58,7 +58,7 @@ describe('electron get pod', function(this: common.ISuite) {
 
       // check that the ready check mark is green
       await this.app.client.waitForExist(
-        `${table} .entity[data-name="nginx"] [data-key="ready"].green-text .fa-check-circle`
+        `${table} .entity[data-name="nginx"] [data-key="ready"].green-text .cell-inner.graphical-icon`
       )
     }
 
@@ -66,6 +66,12 @@ describe('electron get pod', function(this: common.ISuite) {
     const inNamespace = `-n ${ns}`
     allocateNS(this, ns)
 
+    it('should error out when getting non-existant pod', () => {
+      const noName = 'thisShouldNotExist'
+      return cli.do(`${kubectl} get pod ${noName}`, this.app).then(cli.expectError(404))
+    })
+
+    /** TODO: enabe the following test once we have sidecar table poller ready
     // do this a few times, as we might get lucky and have the
     // containers ready by the time we click on the row; we are trying
     // to test that the containers tab actually polls for completion
@@ -74,13 +80,14 @@ describe('electron get pod', function(this: common.ISuite) {
     for (let idx = 0; idx < 5; idx++) {
       it(`should eventually show ready containers if we click mid-creation iter=${idx}`, async () => {
         try {
-          const selector = await cli
+          const selector: string = await cli
             .do(
               `${kubectl} create -f https://raw.githubusercontent.com/kubernetes/examples/master/staging/pod ${inNamespace}`,
               this.app
             )
             .then(cli.expectOKWithCustom({ selector: selectors.BY_NAME('nginx') }))
 
+          await waitForGreen(this.app, selector)
           await this.app.client.waitForExist(`${selector} .clickable`)
           this.app.client.click(`${selector} .clickable`)
           await sidecar
@@ -101,10 +108,46 @@ describe('electron get pod', function(this: common.ISuite) {
             this.app
           )
           .then(cli.expectOKWithCustom({ selector: selectors.BY_NAME('nginx') }))
-          .then(selector => waitForRed(this.app, selector))
+          .then((selector: string) => waitForRed(this.app, selector))
           .catch(common.oops(this))
       })
     }
+    */
+
+    // NOTE: this is an alternative test for the click mid-creation test above, since sidecar table poller is not ready
+    it(`should show ready containers if we click after creation`, async () => {
+      try {
+        const selector: string = await cli
+          .do(
+            `${kubectl} create -f https://raw.githubusercontent.com/kubernetes/examples/master/staging/pod ${inNamespace}`,
+            this.app
+          )
+          .then(cli.expectOKWithCustom({ selector: selectors.BY_NAME('nginx') }))
+
+        await waitForGreen(this.app, selector)
+        await this.app.client.waitForExist(`${selector} .clickable`)
+        this.app.client.click(`${selector} .clickable`)
+        await sidecar
+          .expectOpen(this.app)
+          .then(sidecar.expectMode(defaultModeForGet))
+          .then(sidecar.expectShowing('nginx'))
+
+        await testContainersTab(true)
+      } catch (err) {
+        common.oops(this)(err)
+      }
+    })
+
+    it(`should delete the sample pod from URL via ${kubectl}`, () => {
+      return cli
+        .do(
+          `${kubectl} delete -f https://raw.githubusercontent.com/kubernetes/examples/master/staging/pod ${inNamespace}`,
+          this.app
+        )
+        .then(cli.expectOKWithCustom({ selector: selectors.BY_NAME('nginx') }))
+        .then(selector => waitForRed(this.app, selector))
+        .catch(common.oops(this))
+    })
 
     it(`should create sample pod from URL via ${kubectl}`, () => {
       return cli
@@ -113,13 +156,13 @@ describe('electron get pod', function(this: common.ISuite) {
           this.app
         )
         .then(cli.expectOKWithCustom({ selector: selectors.BY_NAME('nginx') }))
-        .then(selector => waitForGreen(this.app, selector))
+        .then((selector: string) => waitForGreen(this.app, selector))
         .catch(common.oops(this))
     })
 
     it(`should list pods via ${kubectl} then click`, async () => {
       try {
-        const selector = await cli
+        const selector: string = await cli
           .do(`${kubectl} get pods ${inNamespace}`, this.app)
           .then(cli.expectOKWithCustom({ selector: selectors.BY_NAME('nginx') }))
 
@@ -144,8 +187,7 @@ describe('electron get pod', function(this: common.ISuite) {
         const table = `${selectors.SIDECAR} [k8s-table="Pod"]`
         await this.app.client.waitForExist(table)
 
-        const tableTitle = await this.app.client.getText(`${table} .result-table-title`)
-        assert.strictEqual(tableTitle.toLowerCase(), 'pod')
+        await assertTableTitleMatches(this, table, 'pod')
 
         // wait for the badge to become green
         await waitForGreen(this.app, `${table} .entity[data-name="nginx"]`) // [data-key="status"]
@@ -172,8 +214,7 @@ describe('electron get pod', function(this: common.ISuite) {
       // the sidecar should still be full screen https://github.com/IBM/kui/issues/1794
       await this.app.client.waitForExist(selectors.SIDECAR_FULLSCREEN)
 
-      const tableTitle = await this.app.client.getText(`${table} .result-table-title`)
-      assert.strictEqual(tableTitle.toLowerCase(), 'conditions')
+      await assertTableTitleMatches(this, table, 'conditions')
 
       // check the conditions rows
       await Promise.all([
@@ -208,7 +249,7 @@ describe('electron get pod', function(this: common.ISuite) {
           this.app
         )
         .then(cli.expectOKWithCustom({ selector: selectors.BY_NAME('nginx') }))
-        .then(selector => waitForRed(this.app, selector))
+        .then((selector: string) => waitForRed(this.app, selector))
         .catch(common.oops(this))
     })
 

@@ -15,6 +15,7 @@
  */
 
 const uuid = require('uuid/v4')
+const assert = require('assert')
 
 const common = require('@kui-shell/core/tests/lib/common')
 const ui = require('@kui-shell/core/tests/lib/ui')
@@ -28,7 +29,24 @@ exports.defaultModeForGet = 'summary'
  *
  */
 exports.waitForGreen = async (app, selector) => {
-  const badge = `${selector} badge.green-background`
+  const notRepeatingPulse = 'td:not(.repeating-pulse)'
+  const badge = `${selector} ${notRepeatingPulse} badge.green-background`
+  const yellowNotBlinkyBadge = `${selector} ${notRepeatingPulse} badge.yellow-background`
+  const yellowBadge = `${selector} badge.yellow-background`
+
+  // expecting a green badge or a blinky yellow badge
+  if (await app.client.isExisting(yellowNotBlinkyBadge)) {
+    throw Error(`caught a not blinky yellow badge: ${yellowNotBlinkyBadge}`)
+  }
+
+  try {
+    await app.client.waitForExist(yellowBadge, process.env.TIMEOUT || 60000, true)
+  } catch (err) {
+    console.log(`Creation is still yellow after ${process.env.TIMEOUT || 60000}`)
+    const text = await app.client.getText(yellowBadge)
+    console.log(`Creatation status ${text}`)
+  }
+
   await app.client.waitForExist(badge, process.env.TIMEOUT || 60000)
   return badge
 }
@@ -38,7 +56,31 @@ exports.waitForGreen = async (app, selector) => {
  *
  */
 exports.waitForRed = async (app, selector) => {
-  const badge = `${selector} badge.red-background`
+  const notRepeatingPulse = 'td:not(.repeating-pulse)'
+  const badge = `${selector} ${notRepeatingPulse} badge.red-background`
+  const yellowNotBlinkyBadge = `${selector} ${notRepeatingPulse} badge.yellow-background`
+  const yellowBadge = `${selector} badge.yellow-background`
+
+  // the green badge should disapper, wait for 5 seconds at max
+  try {
+    await app.client.waitForExist(badge.replace('red', 'green'), 5000, true)
+  } catch (err) {
+    console.log('Deletion is still green after 5000 ms')
+  }
+
+  // no green badge any more, expecting a red badge or a blinky yellow badge
+  if (await app.client.isExisting(yellowNotBlinkyBadge)) {
+    throw Error(`caught a not blinky yellow badge: ${yellowNotBlinkyBadge}`)
+  }
+
+  try {
+    await app.client.waitForExist(yellowBadge, process.env.TIMEOUT || 60000, true)
+  } catch (err) {
+    console.log(`Deletion is still yellow after ${process.env.TIMEOUT || 60000}`)
+    const text = await app.client.getText(yellowBadge)
+    console.log(`Deletion status ${text}`)
+  }
+
   await app.client.waitForExist(badge, process.env.TIMEOUT || 60000)
   return badge
 }
@@ -96,3 +138,17 @@ exports.waitTillNone = (kind, theCli = cli, name = '', okToSurvive, inNamespace 
 
     iter()
   })
+
+/**
+ * Confirm that the table title matches
+ *
+ */
+exports.assertTableTitleMatches = async function(self, tableSelector, expectedTitle) {
+  // getHTML rather than getText, in case the title is not visible in this client
+  const tableTitle = (await self.app.client.getHTML(`${tableSelector} .result-table-title`)).replace(
+    /<div.*>(.*)<\/div>/,
+    '$1'
+  )
+
+  assert.strictEqual(tableTitle.toLowerCase(), expectedTitle)
+}

@@ -25,6 +25,7 @@ import { injectCSS, uninjectCSS } from '@kui-shell/core/webapp/util/inject'
 import { inBrowser, isHeadless } from '@kui-shell/core/core/capabilities'
 import { getPreference, setPreference, clearPreference } from '@kui-shell/core/core/userdata'
 import { theme as settings, env } from '@kui-shell/core/core/settings'
+
 const debug = Debug('plugins/core-support/theme')
 
 /**
@@ -73,8 +74,16 @@ const usage = {
  * @return the name of the default theme
  *
  */
-const getDefaultTheme = () => {
+const getDefaultTheme = (isDarkMode = false) => {
   let defaultTheme = settings.defaultTheme
+
+  if (isDarkMode) {
+    const darkTheme = settings.themes.find(_ => _.name === 'Dark')
+    if (darkTheme) {
+      defaultTheme = darkTheme.name
+    }
+  }
+
   if (!defaultTheme) {
     console.error('theme bug: the theme does not set a default theme')
     defaultTheme = settings.themes[0] && settings.themes[0].name
@@ -92,7 +101,7 @@ const getDefaultTheme = () => {
  *
  */
 const list = async () => {
-  const { Table, TableStyle } = await import('@kui-shell/core/webapp/models/table')
+  const { Table } = await import('@kui-shell/core/webapp/models/table')
 
   const header: Row = {
     type: 'theme',
@@ -103,6 +112,7 @@ const list = async () => {
 
   const currentTheme = (await getPersistedThemeChoice()) || getDefaultTheme()
   debug('currentTheme', currentTheme)
+  debug('theme list', settings.themes)
 
   const body: Row[] = (settings.themes || []).map(
     (theme): Row => {
@@ -142,8 +152,7 @@ const list = async () => {
     type: 'theme',
     noSort: true,
     header,
-    body,
-    style: TableStyle.Light
+    body
   })
 }
 
@@ -230,11 +239,16 @@ const switchTo = async (theme: string, webContents?: WebContents): Promise<void>
  * Switch to the last user choice, if the user so indicated
  *
  */
-export const switchToPersistedThemeChoice = async (webContents?: WebContents): Promise<void> => {
+export const switchToPersistedThemeChoice = async (webContents?: WebContents, isDarkMode = false): Promise<void> => {
   const theme = await getPersistedThemeChoice()
   if (theme) {
     debug('switching to persisted theme choice')
-    switchTo(theme, webContents)
+    try {
+      await switchTo(theme, webContents)
+    } catch (err) {
+      debug('error switching to persisted theme choice, using default')
+      switchTo(getDefaultTheme(isDarkMode), webContents)
+    }
   } else {
     debug('no persisted theme choice')
     switchTo(getDefaultTheme(), webContents)

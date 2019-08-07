@@ -166,10 +166,6 @@ const makeBreadcrumb = (options: CrumbOptions): Promise<Element> => {
     const item = span()
     item.classList.add('bx--breadcrumb-item')
 
-    if (!options.preserveCase) {
-      item.classList.add('capitalize')
-    }
-
     const dom = span(label, 'bx--no-link')
     dom.setAttribute('data-label', label)
     item.appendChild(dom)
@@ -309,14 +305,11 @@ const format = async (message: UsageLike, options: UsageOptions = new DefaultUsa
     //
     if (!options.noBreadcrumb) {
       // breadcrumb model chain
-      const rootCrumb = {
-        breadcrumb: { label: 'Shell Docs', command: 'help' }
-      }
       const parentChain = (usage.parents || []).map(breadcrumb => ({
         breadcrumb
       }))
-      const thisCommand = { breadcrumb, noSlash: true, preserveCase }
-      const breadcrumbs: CrumbOptions[] = [rootCrumb, ...parentChain, thisCommand]
+      const thisCommand: CrumbOptions[] = breadcrumb ? [{ breadcrumb, noSlash: true, preserveCase }] : []
+      const breadcrumbs: CrumbOptions[] = [...parentChain, ...thisCommand]
 
       // generate the breadcrumb Elements from the model
       const crumbs = await promiseEach(breadcrumbs, makeBreadcrumb)
@@ -379,7 +372,7 @@ const format = async (message: UsageLike, options: UsageOptions = new DefaultUsa
 
     // keep track of the scroll regions we have created; if not
     // many, maybe we use outer scrolling inside of inner scrolling
-    const scrollRegions = []
+    const scrollRegions: HTMLElement[] = []
 
     // any minimally formatted sections? e.g. `intro` and `section` fields
     const makeSection = (parent = right, noMargin = false) => ({ title, content }: TitledContent) => {
@@ -509,6 +502,8 @@ const format = async (message: UsageLike, options: UsageOptions = new DefaultUsa
           return renderRow(rowData.fn(rowData.command))
         }
 
+        const isDir = rowData.available !== undefined || false
+
         // fields of the row model
         // debug('row', rowData)
         const {
@@ -526,7 +521,7 @@ const format = async (message: UsageLike, options: UsageOptions = new DefaultUsa
           advanced = false,
           available,
           example = numeric && 'N',
-          dir: isDir = available || false,
+          dir = isDir,
           title,
           header,
           docs = header || title,
@@ -796,7 +791,7 @@ export interface UsageRow {
   header?: string
   docs?: string
   partial?: boolean
-  defaultValue?: any // eslint-disable-line @typescript-eslint/no-explicit-any
+  defaultValue?: boolean | string | number
   available?: UsageRow[]
 
   // allow users to provide a prefix substring of an `allowed` value
@@ -913,8 +908,12 @@ export class UsageError extends Error implements CodedError {
     return (this.raw as MessageWithUsageModel).usage
   }
 
-  getFormattedMessage(): Promise<HTMLElement> {
-    return this.formattedMessage ? this.formattedMessage : Promise.resolve(span(this.message))
+  static getFormattedMessage(err: UsageError): Promise<HTMLElement> {
+    if (err.formattedMessage && !err.formattedMessage.then && Object.keys(err.formattedMessage).length === 0) {
+      err.formattedMessage = format(err.raw)
+    }
+
+    return err.formattedMessage ? err.formattedMessage : Promise.resolve(span(err.message))
   }
 
   static isUsageError(error: Entity): error is UsageError {

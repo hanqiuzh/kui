@@ -17,14 +17,30 @@
 /* eslint-disable @typescript-eslint/explicit-member-accessibility */
 
 import * as Debug from 'debug'
+import { v4 as uuidgen } from 'uuid'
 
 import UsageError from '@kui-shell/core/core/usage-error'
 import { ReplEval, DirectReplEval } from '@kui-shell/core/core/repl'
 import { getValidCredentials } from '@kui-shell/core/core/capabilities'
-import { ExecOptions } from '@kui-shell/core/models/execOptions'
+import { ExecOptions, withLanguage } from '@kui-shell/core/models/execOptions'
 import { config } from '@kui-shell/core/core/settings'
 import { isCommandHandlerWithEvents, Evaluator, EvaluatorArgs } from '@kui-shell/core/models/command'
 import { ElementMimic } from '@kui-shell/core/util/mimic-dom'
+import { CodedError } from '@kui-shell/core/models/errors'
+
+// import { getChannelForTab } from '@kui-shell/plugin-bash-like/pty/session'
+// copied for now, until we can figure out typescript compiler issues
+import { Tab } from '@kui-shell/core/webapp/cli'
+interface Channel {
+  send: (msg: string) => void
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  on: (eventType: string, handler: any) => void
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  removeEventListener: (eventType: string, handler: any) => void
+}
+function getSessionForTab(tab: Tab): Promise<Channel> {
+  return tab['_kui_session'] as Promise<Channel>
+}
 
 const debug = Debug('plugins/proxy-support/executor')
 
@@ -37,7 +53,7 @@ interface DisabledProxyServerConfig {
   enabled: boolean
 }
 
-function isDisabled(_config: ProxyServerConfig): _config is DisabledProxyServerConfig {
+export function isDisabled(_config: ProxyServerConfig): _config is DisabledProxyServerConfig {
   const config = _config as DisabledProxyServerConfig
   return config && config.enabled === false
 }
@@ -56,6 +72,30 @@ debug('proxyServerConfig', proxyServerConfig)
 
 /** we may want to directly evaluate certain commands in the browser */
 const directEvaluator = new DirectReplEval()
+
+function renderDom(content: ElementMimic): HTMLElement {
+  const dom = document.createElement(content.nodeType)
+
+  if (content.className.length > 0) {
+    dom.className = content.className
+  } else if (content.classList.classList.length > 0) {
+    content.classList.classList.forEach(_ => {
+      dom.classList.add(_)
+    })
+  }
+
+  // TODO attrs
+
+  if (content.innerText) {
+    dom.innerText = content.innerText
+  } else if (content.children && content.children.length > 0) {
+    content.children.forEach(child => {
+      dom.appendChild(renderDom(child))
+    })
+  }
+
+  return dom
+}
 
 /**
  * A repl.exec implementation that proxies to the packages/proxy container
@@ -77,17 +117,102 @@ class ProxyEvaluator implements ReplEval {
       debug('delegating to direct evaluator')
       return directEvaluator.apply(command, execOptions, evaluator, args)
     } else {
-      debug('delegating to proxy evaluator', getValidCredentials())
-      const body = {
-        command,
-        execOptions: Object.assign({}, execOptions, {
+      const execOptionsForInvoke = withLanguage(
+        Object.assign({}, execOptions, {
           isProxied: true,
-          cwd: process.env.PWD || process.cwd(),
+          cwd: process.env.PWD,
           env: process.env,
           credentials: getValidCredentials(),
           tab: undefined, // override execOptions.tab here since the DOM doesn't serialize, see issue: https://github.com/IBM/kui/issues/1649
           rawResponse: true // we will post-process the response
         })
+      )
+
+      if (command !== 'bash websocket open') {
+        // eslint-disable-next-line no-async-promise-executor
+        return new Promise(async (resolve, reject) => {
+          const uuid = uuidgen()
+          debug('delegating to proxy websocket', command, uuid)
+
+          const channel = await getSessionForTab(args.tab)
+
+          const msg = {
+            type: 'request',
+            cmdline: command,
+            uuid,
+            cwd: process.env.PWD,
+            execOptions: execOptionsForInvoke
+          }
+          channel.send(JSON.stringify(msg))
+
+          const MARKER = '\n'
+          let raw = ''
+          const onMessage = (data: string) => {
+            // debug('raw', uuid, data)
+            raw += data
+
+            if (data.endsWith(MARKER)) {
+              raw += data
+
+              try {
+                raw
+                  .split(MARKER)
+                  .filter(_ => _)
+                  .forEach(_ => {
+                    const response: {
+                      uuid: string
+                      response: {
+                        code?: number
+                        statusCode?: number
+                        message?: string
+                        stack?: string
+                        content: string | HTMLElement | ElementMimic
+                      }
+                    } = JSON.parse(_)
+                    if (response.uuid === uuid) {
+                      channel.removeEventListener('message', onMessage)
+                      const code = response.response.code || response.response.statusCode
+                      if (code !== undefined && code !== 200) {
+                        debug('rejecting', response)
+                        if (UsageError.isUsageError(response.response)) {
+                          // e.g. k get -h
+                          reject(response.response)
+                        } else {
+                          // e.g. k get pod nonExistantName
+                          const err: CodedError = new Error(response.response.message)
+                          err.stack = response.response.stack
+                          err.code = err.statusCode = code
+                          err.body = response.response
+                          reject(err)
+                        }
+                      } else if (ElementMimic.isFakeDom(response.response)) {
+                        debug('rendering fakedom', response.response)
+                        resolve(renderDom(response.response))
+                      } else if (ElementMimic.isFakeDom(response.response.content)) {
+                        debug('rendering fakedom content', response.response.content)
+                        response.response.content = renderDom(response.response.content)
+                        resolve(response.response)
+                      } else {
+                        debug('response', response)
+                        resolve(response.response)
+                      }
+                    }
+                  })
+              } catch (err) {
+                console.error('error handling response', raw)
+                console.error(err)
+                reject(new Error('Internal Error'))
+              }
+            }
+          }
+          channel.on('message', onMessage)
+        })
+      }
+
+      debug('delegating to proxy exec', command)
+      const body = {
+        command,
+        execOptions: execOptionsForInvoke
       }
       debug('sending body', body)
 
@@ -127,9 +252,9 @@ class ProxyEvaluator implements ReplEval {
         if (response.statusCode !== 200) {
           debug('rethrowing non-200 response', response)
           // to trigger the catch just below
-          const err = new Error(response.body as string)
-          err['code'] = err['statusCode'] = response.statusCode
-          err['body'] = response.body
+          const err: CodedError = new Error(response.body as string)
+          err.code = err.statusCode = response.statusCode
+          err.body = response.body
           throw err
         } else {
           /*

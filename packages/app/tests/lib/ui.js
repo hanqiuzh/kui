@@ -77,6 +77,7 @@ selectors.SIDECAR_MODE_BUTTON = mode => `${selectors.SIDECAR_MODE_BUTTONS}[data-
 selectors.SIDECAR_BACK_BUTTON = `${selectors.SIDECAR} .sidecar-bottom-stripe-back-button` // back button in the bottom stripe
 selectors.SIDECAR_MAXIMIZE_BUTTON = `${selectors.SIDECAR} .toggle-sidecar-maximization-button` // maximize button in the bottom stripe
 selectors.SIDECAR_CLOSE_BUTTON = `${selectors.SIDECAR} .sidecar-bottom-stripe-close` // close button in the bottom stripe
+selectors.SIDECAR_FULLY_CLOSE_BUTTON = `${selectors.SIDECAR} .sidecar-bottom-stripe-quit` // fully close button in the bottom stripe
 selectors.PROCESSING_PROMPT_BLOCK = `${selectors.PROMPT_BLOCK}.repl-active`
 selectors.CURRENT_PROMPT_BLOCK = `${selectors.PROMPT_BLOCK}.repl-active`
 selectors.PROMPT_BLOCK_N = N => `${selectors.PROMPT_BLOCK}[data-input-count="${N}"]`
@@ -172,7 +173,12 @@ const expectOK = (appAndCount, opt) => {
 }
 
 /** grab focus for the repl */
-const grabFocus = app => {
+const grabFocus = async app => {
+  if (process.env.MOCHA_RUN_TARGET === 'webpack' && process.env.KUI_USE_PROXY === 'true') {
+    // wait for the proxy session to be established
+    await app.client.waitForExist(`${selectors.CURRENT_TAB}.kui--session-init-done`)
+  }
+
   return app.client
     .click(selectors.CURRENT_PROMPT_BLOCK)
     .then(() => app.client.waitForEnabled(selectors.CURRENT_PROMPT_BLOCK))
@@ -594,8 +600,12 @@ exports.expectYAML = (struct1, subset = false, failFast = true) => string => {
     }
     return ok
   } catch (err) {
-    console.error('Error comparing subset for actual value=' + string)
-    throw err
+    if (failFast) {
+      return false
+    } else {
+      console.error('Error comparing subset for actual value=' + string)
+      throw err
+    }
   }
 }
 exports.expectYAMLSubset = (struct1, failFast = true) => exports.expectYAML(struct1, true, failFast)

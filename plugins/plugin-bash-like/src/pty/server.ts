@@ -31,6 +31,8 @@ import { IncomingMessage } from 'http'
 import { Channel } from './channel'
 import { StdioChannelKuiSide } from './stdio-channel'
 
+import { CodedError } from '@kui-shell/core/models/errors'
+import { ExecOptions } from '@kui-shell/core/models/execOptions'
 import { CommandRegistrar } from '@kui-shell/core/models/command'
 
 let portRange = 8083
@@ -199,8 +201,6 @@ export const onConnection = (exitNow: ExitHandler, uid?: number, gid?: number) =
 
   // For all websocket data send it to the shell
   ws.on('message', async (data: string) => {
-    debug('got message')
-
     try {
       const msg: {
         type: string
@@ -211,14 +211,60 @@ export const onConnection = (exitNow: ExitHandler, uid?: number, gid?: number) =
         cwd?: string
         rows?: number
         cols?: number
+
+        uuid?: string // for request-response
+        execOptions?: ExecOptions
       } = JSON.parse(data)
 
       switch (msg.type) {
         case 'exit':
           return exitNow(msg.exitCode)
 
+        case 'request':
+          const { exec } = await import('@kui-shell/core/core/repl')
+          if (msg.env) {
+            process.env = msg.env
+          }
+
+          const terminate = (str: string) => {
+            ws.send(str)
+            // ws.send(`___kui_exit___ ${msg.uuid}`)
+          }
+
+          try {
+            const response = await exec(msg.cmdline, Object.assign({}, msg.execOptions, { rethrowErrors: true }))
+            debug('got response', response)
+            terminate(
+              JSON.stringify({
+                type: 'object',
+                uuid: msg.uuid,
+                response
+              })
+            )
+          } catch (error) {
+            debug('got error', error)
+            const err: CodedError = error
+            terminate(
+              JSON.stringify({
+                type: 'object',
+                uuid: msg.uuid,
+                response: {
+                  code: err.code || err.statusCode,
+                  message: err.message,
+                  stack: err.stack
+                }
+              })
+            )
+          }
+          break
+
         case 'exec':
           const env = Object.assign({}, msg.env || process.env, { KUI: 'true' })
+
+          if (process.env.DEBUG && (!msg.env || !msg.env.DEBUG)) {
+            // don't pass DEBUG unless the user asked for it!
+            delete env.DEBUG
+          }
 
           try {
             const end = msg.cmdline.indexOf(' ')
@@ -239,16 +285,16 @@ export const onConnection = (exitNow: ExitHandler, uid?: number, gid?: number) =
 
             // send all PTY data out to the websocket client
             shell.on('data', (data: string) => {
-              ws.send(JSON.stringify({ type: 'data', data }))
+              ws.send(JSON.stringify({ type: 'data', data, uuid: msg.uuid }))
             })
 
             shell.on('exit', (exitCode: number) => {
               shell = undefined
-              ws.send(JSON.stringify({ type: 'exit', exitCode }))
+              ws.send(JSON.stringify({ type: 'exit', exitCode, uuid: msg.uuid }))
               // exitNow(exitCode)
             })
 
-            ws.send(JSON.stringify({ type: 'state', state: 'ready' }))
+            ws.send(JSON.stringify({ type: 'state', state: 'ready', uuid: msg.uuid }))
           } catch (err) {
             console.error('could not exec', err)
           }
@@ -270,6 +316,7 @@ export const onConnection = (exitNow: ExitHandler, uid?: number, gid?: number) =
               return shell.resize(msg.cols, msg.rows)
             }
           } catch (err) {
+            console.error(`error in resize ${msg.cols} ${msg.rows}`)
             console.error('could not resize pty', err)
           }
           break
@@ -433,7 +480,7 @@ export default (commandTree: CommandRegistrar) => {
           )
 
           const channel = `/exec/response/${N}`
-          ipcRenderer.once(channel, (event, arg: string) => {
+          ipcRenderer.once(channel, (event: never, arg: string) => {
             const message: { error?: Error; success?: boolean; returnValue: number } = JSON.parse(arg)
             if (!message.success) {
               reject(message.error)

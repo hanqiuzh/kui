@@ -19,6 +19,7 @@
 import * as Debug from 'debug'
 
 import * as path from 'path'
+import { v4 as uuid } from 'uuid'
 import * as xterm from 'xterm'
 import stripClean from 'strip-ansi'
 import { safeLoad } from 'js-yaml'
@@ -46,7 +47,10 @@ import { Table } from '@kui-shell/core/webapp/models/table'
 import { ParsedOptions } from '@kui-shell/core/models/command'
 import { ExecOptions } from '@kui-shell/core/models/execOptions'
 
+import * as ui from './ui'
+import * as session from './session'
 import { Channel, InProcessChannel, WebViewChannelRendererSide } from './channel'
+
 const debug = Debug('plugins/bash-like/pty/client')
 
 /* eslint-disable no-control-regex */
@@ -301,7 +305,10 @@ class Resizer {
     debug('getSize', cols, rows, width, height)
 
     const newSize = { rows, cols }
-    setCachedSize(this.tab, newSize)
+    if (!isNaN(rows) && !isNaN(cols)) {
+      setCachedSize(this.tab, newSize)
+    }
+
     return newSize
   }
 
@@ -323,10 +330,12 @@ class Resizer {
     if (this.terminal.rows !== rows || this.terminal.cols !== cols) {
       debug('resize', cols, rows, this.terminal.cols, this.terminal.rows, this.inAltBufferMode())
       try {
-        this.terminal.resize(cols, rows)
+        if (!isNaN(rows) && !isNaN(cols)) {
+          this.terminal.resize(cols, rows)
 
-        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-          this.ws.send(JSON.stringify({ type: 'resize', cols, rows }))
+          if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+            this.ws.send(JSON.stringify({ type: 'resize', cols, rows }))
+          }
         }
       } catch (err) {
         debug(err.message)
@@ -456,15 +465,22 @@ const webviewChannelFactory: ChannelFactory = async () => {
  */
 const getOrCreateChannel = async (
   cmdline: string,
-  channelFactory: ChannelFactory,
-  tab: Element,
+  uuid: string,
+  tab: Tab,
   terminal: xterm.Terminal
 ): Promise<Channel> => {
+  const channelFactory = inBrowser()
+    ? window['webview-proxy'] !== undefined
+      ? webviewChannelFactory
+      : remoteChannelFactory
+    : electronChannelFactory
+
   // tell the server to start a subprocess
   const doExec = (ws: Channel) => {
     const msg = {
       type: 'exec',
       cmdline,
+      uuid,
       rows: terminal.rows,
       cols: terminal.cols,
       cwd: process.env.PWD || (!inBrowser() && process.cwd()), // inBrowser: see https://github.com/IBM/kui/issues/1966
@@ -475,10 +491,10 @@ const getOrCreateChannel = async (
     ws.send(JSON.stringify(msg))
   }
 
-  const cachedws = tab['ws'] as Channel
+  const cachedws = session.getChannelForTab(tab)
 
   if (!cachedws || cachedws.readyState === WebSocket.CLOSING || cachedws.readyState === WebSocket.CLOSED) {
-    debug('allocating new channel')
+    debug('allocating new channel', channelFactory)
     const ws = await channelFactory()
     debug('allocated new channel', ws)
     tab['ws'] = ws
@@ -487,6 +503,13 @@ const getOrCreateChannel = async (
     // do we focus the terminal (till then, the CLI module will handle
     // queuing, and read out the value via disableInputQueueing()
     ws.on('open', () => doExec(ws))
+
+    // when the websocket has closed, notify the user
+    ws.on('close', () => {
+      debug('channel has closed')
+      ui.setOffline()
+      session.pollUntilOnline(tab)
+    })
 
     return ws
   } else {
@@ -568,6 +591,11 @@ export const doExec = (
         // xtermContainer.classList.add('zoomable')
         parent.appendChild(xtermContainer)
 
+        if (execOptions.replSilence) {
+          debug('repl silence')
+          xtermContainer.style.display = 'none'
+        }
+
         // xtermjs will handle the "block"
         setCustomCaret(block)
 
@@ -628,12 +656,8 @@ export const doExec = (
           xtermContainer.classList.add('xterm-terminated')
         }
 
-        const channelFactory = inBrowser()
-          ? window['webview-proxy'] !== undefined
-            ? webviewChannelFactory
-            : remoteChannelFactory
-          : electronChannelFactory
-        const ws: Channel = await getOrCreateChannel(cmdline, channelFactory, tab, terminal).catch((err: Error) => {
+        const ourUUID = uuid()
+        const ws: Channel = await getOrCreateChannel(cmdline, ourUUID, tab, terminal).catch((err: Error) => {
           console.error('error creating channel', err)
           cleanUpTerminal()
           throw err
@@ -657,12 +681,12 @@ export const doExec = (
 
         // relay keyboard input to the server
         let queuedInput: string
-        terminal.on('key', key => {
+        terminal.on('key', (key: string) => {
           if (ws.readyState === WebSocket.CLOSING || ws.readyState === WebSocket.CLOSED) {
             debug('queued input out back', key)
             queuedInput += key
           } else {
-            ws.send(JSON.stringify({ type: 'data', data: key }))
+            ws.send(JSON.stringify({ type: 'data', data: key, uid: ourUUID }))
           }
         })
 
@@ -726,8 +750,7 @@ export const doExec = (
         // receive updates after we receive a process exit event; but we
         // will always receive a `refresh` event when the animation
         // frame is done. see https://github.com/IBM/kui/issues/1272
-        terminal.on('refresh', (evt: { start: number; end: number }) => {
-          debug('refresh', evt.start, evt.end)
+        terminal.on('refresh', (/* evt: { start: number; end: number } */) => {
           resizer.hideTrailingEmptyBlanks()
           doScroll()
           notifyOfWriteCompletion()
@@ -736,7 +759,7 @@ export const doExec = (
         terminal.element.classList.add('fullscreen')
 
         let pendingUsage = false
-        let definitelyNotUsage = false
+        let definitelyNotUsage = argvNoOptions[0] === 'git' // short-term hack u ntil we fix up ascii-to-usage
         let pendingTable: Table
         let raw = ''
 
@@ -744,6 +767,10 @@ export const doExec = (
 
         const onMessage = async (data: string) => {
           const msg = JSON.parse(data)
+
+          if (msg.uuid !== ourUUID) {
+            return
+          }
 
           if (msg.type === 'state' && msg.state === 'ready') {
             const queuedInput = disableInputQueueing()
@@ -788,7 +815,6 @@ export const doExec = (
             if (!definitelyNotTable && raw.length > 0 && !resizer.wasEverInAltBufferMode()) {
               try {
                 const tables = preprocessTable(stripClean(raw).split(/^(?=NAME|Name|ID|\n\*)/m)).filter(x => x)
-                debug('tables', tables)
 
                 if (tables && tables.length > 0) {
                   const tableRows = tables.filter(_ => _.rows !== undefined).flatMap(_ => _.rows)
@@ -801,6 +827,8 @@ export const doExec = (
                     const tableModel = formatTable(command, verb, entityType, parsedOptions, tableRows)
                     debug('tableModel', tableModel)
                     pendingTable = tableModel
+                  } else if (raw.length > 1000) {
+                    definitelyNotTable = true
                   }
                 } else {
                   definitelyNotTable = true
@@ -820,6 +848,7 @@ export const doExec = (
               if (raw.length > 500) {
                 definitelyNotUsage = true
               }
+
               pendingWrites++
               terminal.write(msg.data)
             }

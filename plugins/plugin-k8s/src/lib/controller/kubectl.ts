@@ -15,8 +15,10 @@
  */
 
 import * as Debug from 'debug'
+const debug = Debug('k8s/controller/kubectl')
+debug('loading')
 
-import { isHeadless } from '@kui-shell/core/core/capabilities'
+import { isHeadless, inBrowser } from '@kui-shell/core/core/capabilities'
 import { findFile } from '@kui-shell/core/core/find-file'
 import { UsageError, UsageModel } from '@kui-shell/core/core/usage-error'
 import {
@@ -48,11 +50,9 @@ import { preprocessTable, formatTable } from '../view/formatTable'
 import { deleteResourceButton } from '../view/modes/crud'
 import { statusButton, renderAndViewStatus } from '../view/modes/status'
 import { status as statusImpl } from './status'
+import helmGet from './helm/get'
 
 import repl = require('@kui-shell/core/core/repl')
-
-const debug = Debug('k8s/controller/kubectl')
-debug('loading')
 
 // eslint-disable-next-line @typescript-eslint/no-empty-interface
 interface KubeExecOptions extends ExecOptions {
@@ -77,9 +77,10 @@ const kubelike = /kubectl|oc/
 const isKubeLike = (command: string): boolean => kubelike.test(command)
 
 /** lazily load js-yaml and invoke its yaml parser */
-const parseYAML = async (str: string): Promise<KubeResource> => {
-  const { safeLoad } = await import('js-yaml')
-  return safeLoad(str)
+const parseYAML = async (str: string): Promise<KubeResource | KubeResource[]> => {
+  const { safeLoadAll } = await import('js-yaml')
+  const yamls = safeLoadAll(str)
+  return yamls.length === 1 ? yamls[0] : yamls
 }
 
 /**
@@ -173,7 +174,7 @@ const table = (
   options: ParsedOptions,
   execOptions: KubeExecOptions
 ): Table | MultiTable | HTMLElement | Delete => {
-  debug('displaying as table', verb, entityType)
+  debug('displaying as table', command, verb, entityType)
   // the ?=\s+ part is a positive lookahead; we want to
   // match only "NAME " but don't want to capture the
   // whitespace
@@ -270,12 +271,13 @@ const executeLocally = (command: string) => (opts: EvaluatorArgs) =>
     const isKube = isKubeLike(command)
     debug('exec', command, isKube)
 
-    const verb = argv[1]
+    const verb = command === 'helm' && argv[1] === 'repo' ? argv[2] : argv[1]
     const entityType = command === 'helm' ? command : verb && verb.match(/log(s)?/) ? verb : argv[2]
     const entity = command === 'helm' ? argv[2] : entityType === 'secret' ? argv[4] : argv[3]
 
     if (!isHeadless() && isKube && verb === 'edit') {
       debug('redirecting kubectl edit to shell')
+      execOptions.exec = 'qexec'
       repl
         .qexec(`! ${rawCommand}`, block, undefined, Object.assign({}, execOptions, { createOutputStream }))
         .then(resolve)
@@ -296,14 +298,18 @@ const executeLocally = (command: string) => (opts: EvaluatorArgs) =>
         (isKube && verb === 'get' && execOptions.raw && 'json'))
 
     if (
+      !execOptions.raw &&
       (!isHeadless() || execOptions.isProxied) &&
       !execOptions.noDelegation &&
       isKube &&
-      ((verb === 'describe' || (verb === 'get' && (output === 'yaml' || output === 'json'))) &&
+      ((verb === 'summary' || (verb === 'get' && (output === 'yaml' || output === 'json'))) &&
         (execOptions.type !== ExecType.Nested || execOptions.delegationOk))
     ) {
-      debug('delegating to describe', execOptions.delegationOk, ExecType[execOptions.type].toString())
+      debug('delegating to summary provider', execOptions.delegationOk, ExecType[execOptions.type].toString())
       const describeImpl = (await import('./describe')).default
+      opts.argvNoOptions[0] = 'kubectl'
+      opts.argv[0] = 'kubectl'
+      opts.command = opts.command.replace(/^_kubectl/, 'kubectl')
       return describeImpl(opts)
         .then(resolve)
         .catch(reject)
@@ -593,7 +599,7 @@ const executeLocally = (command: string) => (opts: EvaluatorArgs) =>
           output === 'json'
             ? JSON.parse(out)
             : verb === 'logs'
-            ? formatLogs(out)
+            ? formatLogs(out, execOptions)
             : output === 'yaml'
             ? redactYAML(out)
             : redactJSON(out)
@@ -609,7 +615,8 @@ const executeLocally = (command: string) => (opts: EvaluatorArgs) =>
           {
             mode: 'result',
             direct: rawCommand,
-            label: output === 'json' || output === 'yaml' ? output.toUpperCase() : output,
+            label:
+              verb === 'describe' ? 'describe' : output === 'json' || output === 'yaml' ? output.toUpperCase() : output,
             defaultMode: true
           }
         ]
@@ -630,6 +637,17 @@ const executeLocally = (command: string) => (opts: EvaluatorArgs) =>
         }
 
         const yaml = verb === 'get' && (await parseYAML(out))
+
+        if (Array.isArray(yaml)) {
+          const { safeDump } = await import('js-yaml')
+          cleanupAndResolve({
+            type: 'custom',
+            content: safeDump(yaml),
+            contentType: 'yaml'
+          })
+          return
+        }
+
         const subtext = createdOn(yaml)
 
         // sidecar badges
@@ -652,6 +670,15 @@ const executeLocally = (command: string) => (opts: EvaluatorArgs) =>
             })
           )
           modes.push(deleteResourceButton())
+        } else if (verb === 'describe') {
+          const getCmd = opts.command.replace(/describe/, 'get').replace(/(-o|--output)[= ](yaml|json)/, '')
+          modes.push({
+            mode: 'raw',
+            label: 'YAML',
+            direct: `${getCmd} -o yaml`,
+            order: 999,
+            leaveBottomStripeAlone: true
+          })
         }
 
         const content = result
@@ -666,7 +693,7 @@ const executeLocally = (command: string) => (opts: EvaluatorArgs) =>
 
         const record = {
           type: 'custom',
-          isEntity: true,
+          isEntity: verb === 'describe' || (yaml && yaml.metadata !== undefined),
           name: entity || verb,
           packageName: (yaml && yaml.metadata && yaml.metadata.namespace) || '',
           namespace: options.namespace || options.n,
@@ -674,6 +701,10 @@ const executeLocally = (command: string) => (opts: EvaluatorArgs) =>
           version,
           prettyType: (yaml && yaml.kind) || entityTypeForDisplay || command,
           subtext,
+          toolbarText: {
+            type: 'info',
+            text: 'You are in read-only view mode'
+          },
           noCost: true, // don't display the cost in the UI
           modes,
           badges: badges.filter(x => x),
@@ -704,7 +735,15 @@ const executeLocally = (command: string) => (opts: EvaluatorArgs) =>
       } else if (formatters[command] && formatters[command][verb]) {
         debug('using custom formatter')
         cleanupAndResolve(
-          formatters[command][verb].format(command, verb, entityType, options, out, opts.createOutputStream())
+          formatters[command][verb].format(
+            command,
+            verb,
+            entityType,
+            options,
+            out,
+            opts.createOutputStream(),
+            execOptions
+          )
         )
       } else if (shouldWeDisplayAsTable(verb, entityType, output, options)) {
         //
@@ -746,8 +785,40 @@ const executeLocally = (command: string) => (opts: EvaluatorArgs) =>
  * Executor implementations
  *
  */
-const kubectl = executeLocally('kubectl')
-const helm = executeLocally('helm')
+const _kubectl = executeLocally('kubectl')
+export const _helm = executeLocally('helm')
+
+function helm(opts: EvaluatorArgs) {
+  const idx = opts.argvNoOptions.indexOf('helm')
+  if (opts.argvNoOptions[idx + 1] === 'get') {
+    return helmGet(opts)
+  } else {
+    return _helm(opts)
+  }
+}
+
+const shouldSendToPTY = (argv: string[]): boolean => (argv.length > 1 && argv[1] === 'exec') || argv.includes('|')
+
+function kubectl(opts: EvaluatorArgs) {
+  if (!isHeadless() && shouldSendToPTY(opts.argvNoOptions)) {
+    // execOptions.exec = 'qexec'
+    debug('redirect exec command to PTY')
+    const commandToPTY = opts.command.replace(/^k(\s)/, 'kubectl$1')
+    return repl.qexec(`sendtopty ${commandToPTY}`, opts.block, undefined, opts.execOptions)
+  } else if (!inBrowser()) {
+    debug('invoking _kubectl directly')
+    return _kubectl(opts)
+  } else {
+    debug('invoking _kubectl via qexec')
+    const command = opts.command.replace(/^kubectl(\s)/, '_kubectl$1').replace(/^k(\s)/, '_kubectl$1')
+    return repl.qexec(command, opts.block, undefined, {
+      tab: opts.tab,
+      raw: opts.execOptions.raw,
+      noDelegation: opts.execOptions.noDelegation,
+      delegationOk: opts.execOptions.type !== ExecType.Nested
+    })
+  }
+}
 
 /**
  * Delegate 'k8s <verb>' to 'kubectl verb'
@@ -773,14 +844,19 @@ const dispatchViaDelegationTo = (delegate: CommandHandler) => (opts: EvaluatorAr
  *
  */
 export default async (commandTree: CommandRegistrar) => {
-  const kubectlCmd = await commandTree.listen('/k8s/kubectl', kubectl, {
+  await commandTree.listen('/k8s/_kubectl', _kubectl, {
     usage: usage('kubectl'),
     requiresLocal: true,
     noAuthOk: ['openwhisk']
   })
+  const kubectlCmd = await commandTree.listen('/k8s/kubectl', kubectl, {
+    usage: usage('kubectl'),
+    inBrowserOk: true,
+    noAuthOk: ['openwhisk']
+  })
   await commandTree.synonym('/k8s/k', kubectl, kubectlCmd, {
     usage: usage('kubectl'),
-    requiresLocal: true,
+    inBrowserOk: true,
     noAuthOk: ['openwhisk']
   })
 

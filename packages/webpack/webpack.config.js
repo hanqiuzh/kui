@@ -1,5 +1,5 @@
 /*
- * Copyright 2018 IBM Corporation
+ * Copyright 2018-19 IBM Corporation
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -35,8 +35,6 @@ if (isMonorepo) {
   console.log('external client mode')
 }
 
-// const Visualizer = require('webpack-visualizer-plugin')
-
 /** point webpack to the root directory */
 const stageDir = process.env.KUI_STAGE || process.env.KUI_MONO_HOME || process.cwd()
 console.log('stageDir', stageDir)
@@ -44,7 +42,7 @@ console.log('stageDir', stageDir)
 /** point webpack to the output directory */
 const buildDir =
   process.env.KUI_BUILDDIR ||
-  (process.env.KUI_MONO_HOME && path.join(process.env.KUI_MONO_HOME, 'clients/default/dist/webpack')) ||
+  (process.env.KUI_MONO_HOME && path.join(process.env.KUI_MONO_HOME, 'clients', process.env.CLIENT, 'dist/webpack')) ||
   path.join(stageDir, 'dist/webpack')
 console.log('buildDir', buildDir)
 
@@ -57,7 +55,7 @@ console.log('builderHome', builderHome)
 
 if (!process.env.CLIENT_HOME) {
   if (process.env.KUI_MONO_HOME) {
-    process.env.CLIENT_HOME = path.join(process.env.KUI_MONO_HOME, 'clients/default')
+    process.env.CLIENT_HOME = path.join(process.env.KUI_MONO_HOME, 'clients', process.env.CLIENT)
   } else {
     process.env.CLIENT_HOME = stageDir
   }
@@ -100,9 +98,6 @@ const optimization = {
   usedExports: true
 }
 
-// for debugging, webpack stats plugin
-/* plugins.push(new Visualizer({ filename: './webpack-stats.html' })) */
-
 // the Kui builder plugin
 plugins.push({
   apply: compiler => {
@@ -115,7 +110,7 @@ plugins.push({
 
         const overrides = {
           build: { writeConfig: false },
-          env: { main, hash }
+          env: { main, hash, resourceRoot: '.' }
         }
 
         if (isWatching) {
@@ -164,8 +159,6 @@ module.exports = {
     'chokidar',
     'fsevents',
     'shelljs',
-    'lodash',
-    'async',
     'module',
     'net',
     'webworker-threads', // wskflow

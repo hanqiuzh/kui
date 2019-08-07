@@ -141,7 +141,7 @@ export const maybeHideEntity = (tab: Tab, entity: EntitySpec): boolean => {
 export const getActiveView = (tab: Tab) => {
   const sidecar = getSidecar(tab)
   const activeView = sidecar.getAttribute('data-active-view')
-  const container = sidecar.querySelector(activeView)
+  const container = sidecar.querySelector(`.sidecar-content-container ${activeView}`)
 
   return container
 }
@@ -347,11 +347,13 @@ export interface CustomSpec extends EntitySpec, MetadataBearing {
   presentation?: Presentation
   renderAs?: string
   subtext?: Formattable
+  toolbarText?: { type: 'info' | 'warning' | 'error'; text: string }
   content: CustomContent
   badges?: BadgeSpec[]
   contentType?: string
   contentTypeProjection?: string
   resource?: MetadataBearing
+  createdOnString?: string
 }
 
 /**
@@ -389,7 +391,7 @@ export const setMaximization = (tab: Tab, op = 'add', cause: MaximizationCause =
   }
 
   tab.classList[op]('sidecar-full-screen')
-  setTimeout(() => eventBus.emit('/sidecar/maximize'), 600)
+  setTimeout(() => eventBus.emit('/sidecar/maximize'), 850)
 
   if (tab.classList.contains('sidecar-full-screen')) {
     // if we entered full screen mode, remember if the user caused it,
@@ -497,10 +499,16 @@ export const addVersionBadge = (tab: Tab, entity: EntitySpec, { clear = false, b
   if (clear) {
     clearBadges(tab)
   }
-  if (entity.version) {
-    addBadge(tab, /^v/.test(entity.version) ? entity.version : `v${entity.version}`, { badgesDom }).classList.add(
-      'version'
-    )
+
+  if (isMetadataBearing(entity)) {
+    const version = (entity as MetadataBearing).metadata.generation
+    addBadge(tab, /^v/.test(version) ? version : `v${version}`, { badgesDom }).classList.add('version')
+  }
+
+  const version = entity.version || (isMetadataBearingByReference(entity) && entity.resource.metadata.generation)
+
+  if (version) {
+    addBadge(tab, /^v/.test(version) ? version : `v${version}`, { badgesDom }).classList.add('version')
   }
 }
 
@@ -561,9 +569,10 @@ export const addSidecarHeaderIconText = (viewName: string, sidecar: HTMLElement)
 }
 
 /** format the creation time of a resource */
-const createdOn = (resource: MetadataBearing): HTMLElement => {
+const createdOn = (resource: MetadataBearing, entity: CustomSpec): HTMLElement => {
   const startTime = /* resource.status && resource.status.startTime || */ resource.metadata.creationTimestamp
-  const prefixText = /* resource.status && resource.status.startTime ? 'Started on ' : */ 'Created on '
+  const prefixText =
+    /* resource.status && resource.status.startTime ? 'Started on ' : */ entity.createdOnString || 'Created on '
 
   if (!startTime) {
     return
@@ -604,7 +613,7 @@ export const addNameToSidecarHeader = async (
   // mine for identifying characteristics
   const metadataBearer = isMetadataBearingByReference(entity) ? entity.resource : isMetadataBearing(entity) && entity
   if (metadataBearer) {
-    const maybeName = metadataBearer.spec && (metadataBearer.spec.displayName || metadataBearer.metadata.name)
+    const maybeName = (metadataBearer.spec && metadataBearer.spec.displayName) || metadataBearer.metadata.name
     if (maybeName) {
       name = maybeName
     }
@@ -618,7 +627,7 @@ export const addNameToSidecarHeader = async (
     if (!subtext) {
       // if we weren't given a "subtext", and we find legitimate
       // "created on" metadata, then show that as the subtext
-      const maybe = createdOn(metadataBearer)
+      const maybe = createdOn(metadataBearer, isCustomSpec(entity) && entity)
       if (maybe) {
         subtext = maybe
       }
@@ -646,7 +655,7 @@ export const addNameToSidecarHeader = async (
       const nameContainer = element('.entity-name', nameDom)
       nameContainer.innerText = name
     }
-  } else {
+  } else if (name) {
     const nameContainer = nameDom.querySelector('.entity-name')
     removeAllDomChildren(nameContainer)
     nameContainer.appendChild(name)
@@ -670,6 +679,16 @@ export const addNameToSidecarHeader = async (
     } else {
       sub.innerText = text
     }
+  }
+
+  const toolbarTextContainer = element('.sidecar-bottom-stripe-toolbar .sidecar-toolbar-text', sidecar)
+  const toolbarTextContent = element('.sidecar-toolbar-text-content', toolbarTextContainer)
+  if (isCustomSpec(entity) && entity.toolbarText) {
+    toolbarTextContent.innerText = entity.toolbarText.text
+    toolbarTextContainer.setAttribute('data-type', entity.toolbarText.type)
+  } else {
+    toolbarTextContent.innerText = ''
+    toolbarTextContainer.removeAttribute('data-type')
   }
 
   return nameDom
@@ -794,7 +813,9 @@ export const showCustom = async (tab: Tab, custom: CustomSpec, options?: ExecOpt
   if (custom && custom.isEntity) {
     const entity = custom
     sidecar.entity = entity
-    sidecar.entity.type = sidecar.entity.viewName
+    if (sidecar.entity.viewName) {
+      sidecar.entity.type = sidecar.entity.viewName
+    }
 
     addNameToSidecarHeader(
       sidecar,

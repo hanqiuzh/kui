@@ -28,17 +28,30 @@ import {
 } from '@kui-shell/core/webapp/views/sidecar'
 import sidecarSelector from '@kui-shell/core/webapp/views/sidecar-selector'
 import { element, removeAllDomChildren } from '@kui-shell/core/webapp/util/dom'
-import { listen, getCurrentPrompt, getCurrentTab, getTabIndex, Tab, setStatus } from '@kui-shell/core/webapp/cli'
+import {
+  isPopup,
+  listen,
+  getCurrentPrompt,
+  getCurrentTab,
+  getTabIndex,
+  Tab,
+  setStatus
+} from '@kui-shell/core/webapp/cli'
 import eventBus from '@kui-shell/core/core/events'
 import { pexec, qexec } from '@kui-shell/core/core/repl'
 import { CommandRegistrar, Event, ExecType, EvaluatorArgs } from '@kui-shell/core/models/command'
-import { theme } from '@kui-shell/core/core/settings'
+import { theme, config } from '@kui-shell/core/core/settings'
 import { inBrowser } from '@kui-shell/core/core/capabilities'
 import { WatchableJob } from '@kui-shell/core/core/job'
 
 const debug = Debug('plugins/core-support/new-tab')
 
 export const tabButtonSelector = '#new-tab-button > svg'
+
+interface TabConfig {
+  topTabs?: { names: 'fixed' | 'command' }
+}
+const { topTabs = { names: 'command' } } = config as TabConfig
 
 const usage = {
   strict: 'switch',
@@ -130,10 +143,12 @@ const switchTab = (tabIndex: number, activateOnly = false) => {
       const currentTabButton = getCurrentTabButton()
       currentVisibleTab.classList.remove('visible')
       currentTabButton.classList.remove('left-tab-stripe-button-selected')
+      currentTabButton.classList.remove('kui-tab--active')
     }
 
     nextTab.classList.add('visible')
     nextTabButton.classList.add('left-tab-stripe-button-selected')
+    nextTabButton.classList.add('kui-tab--active')
 
     if (currentTab) {
       ;(currentTab['state'] as TabState).capture()
@@ -193,10 +208,14 @@ const addCommandEvaluationListeners = (): void => {
           // need to find a way to capture that sidecar-producing
           // command
           if (!isSidecarVisible(tab)) {
-            getTabButtonLabel(tab).innerText = theme['productName']
+            if (topTabs.names === 'command') {
+              getTabButtonLabel(tab).innerText = theme['productName']
+            }
           }
         } else {
-          getTabButtonLabel(tab).innerText = event.command
+          if (topTabs.names === 'command') {
+            getTabButtonLabel(tab).innerText = event.command
+          }
           getTabButton(tab).classList.add('processing')
         }
       }
@@ -266,6 +285,8 @@ const closeTab = (tab = getCurrentTab()) => {
 const perTabInit = (tab: Tab, doListen = true) => {
   tab['state'] = new TabState()
 
+  eventBus.emit('/tab/new', tab)
+
   if (doListen) {
     listen(getCurrentPrompt(tab))
   }
@@ -296,9 +317,14 @@ const perTabInit = (tab: Tab, doListen = true) => {
 
   // quit button
   sidecarSelector(tab, '.sidecar-bottom-stripe-quit').onclick = () => {
-    debug('quit button')
     try {
-      window.close()
+      if (isPopup()) {
+        debug('quit button click')
+        window.close()
+      } else {
+        debug('close sidecar button click')
+        clearSelection(tab)
+      }
     } catch (err) {
       console.error('error handling quit button click', err)
     }
@@ -333,19 +359,18 @@ const newTab = async (basedOnEvent = false): Promise<boolean> => {
   newTab.setAttribute('data-tab-index', newTabId)
   newTab.className = 'visible'
 
-  currentVisibleTab.classList.remove('visible')
-  currentVisibleTab.parentNode.appendChild(newTab)
-
   const currentTabButton = getCurrentTabButton()
   currentTabButton.classList.remove('left-tab-stripe-button-selected')
+  currentTabButton.classList.remove('kui-tab--active')
 
   const newTabButton = currentTabButton.cloneNode(true) as HTMLElement
   newTabButton.classList.add('left-tab-stripe-button-selected')
+  newTabButton.classList.add('kui-tab--active')
   newTabButton.classList.remove('processing')
   newTabButton.setAttribute('data-tab-button-index', newTabId)
   currentTabButton.parentNode.appendChild(newTabButton)
 
-  getTabButtonLabel(newTab).innerText = 'New Tab'
+  getTabButtonLabel(newTab).innerText = topTabs.names === 'fixed' ? `Tab ${getTabIndex(newTab)}` : 'New Tab'
 
   newTabButton.onclick = () => qexec(`tab switch ${newTabId}`)
 
@@ -373,6 +398,11 @@ const newTab = async (basedOnEvent = false): Promise<boolean> => {
 
   newTabButton.scrollIntoView()
 
+  // make the new tab visible at the very end of the above init work!
+  currentVisibleTab.classList.remove('visible')
+  currentVisibleTab.parentNode.appendChild(newTab)
+  getCurrentPrompt(newTab).focus()
+
   return true
 }
 
@@ -382,11 +412,6 @@ const newTab = async (basedOnEvent = false): Promise<boolean> => {
  *
  */
 const oneTimeInit = (): void => {
-  // focus the current prompt no matter where the user clicks in the left tab stripe
-  ;(document.querySelector('.main > .left-tab-stripe') as HTMLElement).onclick = () => {
-    getCurrentPrompt().focus()
-  }
-
   const initialTabButton = getCurrentTabButton()
   const initialTabId = initialTabButton.getAttribute('data-tab-button-index')
   initialTabButton.onclick = () => qexec(`tab switch ${initialTabId}`)
@@ -403,7 +428,13 @@ const oneTimeInit = (): void => {
   // initialize the first tab
   perTabInit(getCurrentTab(), false)
 
-  getTabButtonLabel(getCurrentTab()).innerText = theme['productName']
+  getTabButtonLabel(getCurrentTab()).innerText =
+    topTabs.names === 'fixed' ? `Tab ${getTabIndex(getCurrentTab())}` : theme['productName']
+
+  // focus the current prompt no matter where the user clicks in the left tab stripe
+  ;(document.querySelector('.main > .left-tab-stripe') as HTMLElement).onclick = () => {
+    getCurrentPrompt().focus()
+  }
 }
 
 /**

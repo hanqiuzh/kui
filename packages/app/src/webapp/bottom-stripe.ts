@@ -18,7 +18,7 @@ import * as Debug from 'debug'
 
 import { Tab } from './cli'
 import { removeAllDomChildren } from './util/dom'
-import { isTable } from './models/table'
+import { isTable, isMultiTable } from './models/table'
 import { formatTable } from './views/table'
 import { getSidecar, showCustom, isCustomSpec, CustomSpec, insertView } from './views/sidecar'
 import sidecarSelector from './views/sidecar-selector'
@@ -79,7 +79,7 @@ const callDirect = async (tab: Tab, makeView: DirectViewController, entity, exec
     return combined
   } else {
     const provider = await import(`@kui-shell/plugin-${makeView.plugin}/${makeView.module}`)
-    return provider[makeView.operation](tab, makeView.parameters)
+    return provider[makeView.operation](tab, makeView.parameters, entity)
   }
 }
 
@@ -118,6 +118,7 @@ export interface SidecarMode {
 
   command?: any // eslint-disable-line @typescript-eslint/no-explicit-any
   direct?: DirectViewController
+  url?: string
 
   execOptions?: ExecOptions
 
@@ -159,7 +160,7 @@ export const css = {
       '.sidecar-top-stripe .sidecar-bottom-stripe-left-bits .sidecar-bottom-stripe-mode-bits .bx--tabs__nav'
     ),
   bottomContainer: (tab: Tab) =>
-    sidecarSelector(tab, '.sidecar-bottom-stripe .sidecar-bottom-stripe-left-bits .sidecar-bottom-stripe-mode-bits'),
+    sidecarSelector(tab, '.sidecar-bottom-stripe-toolbar .sidecar-bottom-stripe-mode-bits'),
   active: 'bx--tabs__nav-item--selected',
   selected: 'selected',
   hidden: 'hidden'
@@ -188,6 +189,7 @@ const _addModeButton = (
     data,
     command = () => mode,
     direct,
+    url,
     execOptions,
     defaultMode,
     actAsButton,
@@ -254,6 +256,9 @@ const _addModeButton = (
       // delete
       icon.innerHTML =
         '<svg focusable="false" preserveAspectRatio="xMidYMid meet" style="will-change: transform;" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M6 6h1v6H6zm3 0h1v6H9z"></path><path d="M2 3v1h1v10c0 .6.4 1 1 1h8c.6 0 1-.4 1-1V4h1V3H2zm2 11V4h8v10H4zM6 1h4v1H6z"></path></svg>'
+    } else if (/fa-unlock/.test(fontawesome)) {
+      icon.innerHTML =
+        '<svg focusable="false" preserveAspectRatio="xMidYMid meet" style="will-change: transform;" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M12 7H6V4c0-1.1.9-2 2-2s2 .9 2 2h1c0-1.7-1.3-3-3-3S5 2.3 5 4v3H4c-.6 0-1 .4-1 1v6c0 .6.4 1 1 1h8c.6 0 1-.4 1-1V8c0-.6-.4-1-1-1zm0 7H4V8h8v6z"></path></svg>'
     } else if (/fa-exclamation/.test(fontawesome)) {
       icon.innerHTML =
         '<svg focusable="false" preserveAspectRatio="xMidYMid meet" style="will-change: transform;" xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><path d="M10 1c-5 0-9 4-9 9s4 9 9 9 9-4 9-9-4-9-9-9zm-.8 4h1.5v7H9.2V5zm.8 11c-.6 0-1-.4-1-1s.4-1 1-1 1 .4 1 1-.4 1-1 1z"></path><path d="M9.2 5h1.5v7H9.2V5zm.8 11c-.6 0-1-.4-1-1s.4-1 1-1 1 .4 1 1-.4 1-1 1z" data-icon-path="inner-path" opacity="0"></path></svg>'
@@ -314,9 +319,11 @@ const _addModeButton = (
 
   if (balloon) {
     button.setAttribute('data-balloon', balloon)
-    button.setAttribute('data-balloon-pos', 'down')
+    button.setAttribute('data-balloon-pos', !isTab ? 'down-right' : 'down')
     if (balloonLength) {
       button.setAttribute('data-balloon-length', balloonLength)
+    } else {
+      button.setAttribute('data-balloon-length', 'medium')
     }
   }
 
@@ -326,8 +333,15 @@ const _addModeButton = (
     getSidecar(tab).entity = entity
   }
 
-  // insert the command handler
-  if (command || direct) {
+  if (url) {
+    //
+    // onclick, open a new page
+    //
+    button.onclick = () => window.open(url)
+  } else if (command || direct) {
+    //
+    // insert the command handler
+    //
     button.onclick = async () => {
       // change the active button
       const changeActiveButton = () => {
@@ -364,9 +378,14 @@ const _addModeButton = (
       // execute the command
       if (direct) {
         try {
+          if (isDirectViewEntity(direct) || leaveBottomStripeAlone) {
+            // change the active button before we fetch the model
+            changeActiveButton()
+          }
+
           const view = await callDirect(tab, direct, entity, execOptions)
           if (view && !actAsButton) {
-            if (isTable(view) || isDirectViewEntity(direct) || leaveBottomStripeAlone) {
+            if (isTable(view)) {
               changeActiveButton()
             }
 
@@ -383,7 +402,7 @@ const _addModeButton = (
             } else if (isCustomSpec(view)) {
               // Promise.resolve(view as Promise<ICustomSpec>).then(custom => showCustom(tab, custom, { leaveBottomStripeAlone }))
               showCustom(tab, view, { leaveBottomStripeAlone })
-            } else if (isTable(view)) {
+            } else if (isTable(view) || isMultiTable(view)) {
               const dom1 = document.createElement('div')
               const dom2 = document.createElement('div')
               dom1.classList.add('padding-content', 'scrollable', 'scrollable-auto')

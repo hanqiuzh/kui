@@ -15,12 +15,12 @@
  */
 
 import * as common from '@kui-shell/core/tests/lib/common'
-import { cli, selectors } from '@kui-shell/core/tests/lib/ui'
+import { cli, selectors, sidecar, AppAndCount } from '@kui-shell/core/tests/lib/ui'
 import * as assert from 'assert'
 
 import { createNS, allocateNS, deleteNS } from '@kui-shell/plugin-k8s/tests/lib/k8s/utils'
 
-describe('helm commands', function(this: common.ISuite) {
+common.localDescribe('helm commands', function(this: common.ISuite) {
   before(common.before(this))
   after(common.after(this))
 
@@ -41,25 +41,31 @@ describe('helm commands', function(this: common.ISuite) {
     })
   })
 
+  const checkHelmStatus = async (res: AppAndCount) => {
+    await cli.expectOKWithAny(res)
+
+    const table = await this.app.client.getText(`${selectors.OUTPUT_N(res.count)} .result-table-title`)
+    assert.strict.equal(table.length, 6)
+
+    const text = await this.app.client.getText(`${selectors.OUTPUT_N(res.count)} .kui--mixed-response--text`)
+    assert.ok(Array.isArray(text), 'expect more than one section of text output')
+    if (Array.isArray(text)) {
+      assert.ok(text.find(x => x && x.includes('NOTES:')), 'expect a NOTES section of streaming output')
+      assert.ok(text.find(x => x && x.includes('LAST DEPLOYED:')), 'expect a LAST DEPLOYED section of streaming output')
+    }
+  }
+
   it(`should create sample helm chart`, () => {
     return cli
       .do(`helm install --name ${name} stable/mysql ${inNamespace}`, this.app)
-      .then(async res => {
-        await cli.expectOKWithAny(res)
+      .then(checkHelmStatus)
+      .catch(common.oops(this))
+  })
 
-        const table = await this.app.client.getText(`${selectors.OUTPUT_N(res.count)} .result-table-title`)
-        assert.strict.equal(table.length, 6)
-
-        const text = await this.app.client.getText(`${selectors.OUTPUT_N(res.count)} .streaming-output`)
-        assert.ok(Array.isArray(text), 'expect more than one section of streaming output')
-        if (Array.isArray(text)) {
-          assert.ok(text.find(x => x && x.includes('NOTES:')), 'expect a NOTES section of streaming output')
-          assert.ok(
-            text.find(x => x && x.includes('LAST DEPLOYED:')),
-            'expect a LAST DEPLOYED section of streaming output'
-          )
-        }
-      })
+  it(`should show the status of that new release`, () => {
+    return cli
+      .do(`helm status ${name}`, this.app)
+      .then(checkHelmStatus)
       .catch(common.oops(this))
   })
 
@@ -67,6 +73,31 @@ describe('helm commands', function(this: common.ISuite) {
     return cli
       .do(`helm list ${inNamespace}`, this.app)
       .then(cli.expectOKWith(name))
+      .catch(common.oops(this))
+  })
+
+  it(`should show the release in sidecar via helm get`, () => {
+    return cli
+      .do(`helm get ${name}`, this.app)
+      .then(cli.expectJustOK)
+      .then(sidecar.expectOpen)
+      .then(sidecar.expectShowing('mysql', undefined, true)) // true means substring match ok
+      .then(() => this.app.client.click(selectors.SIDECAR_MODE_BUTTON('status')))
+      .then(() => this.app.client.waitForText(`${selectors.SIDECAR_CUSTOM_CONTENT} .result-table-title`))
+      .then(() => this.app.client.getText(`${selectors.SIDECAR_CUSTOM_CONTENT} .result-table-title`))
+      .then(titles => {
+        assert.ok(Array.isArray(titles))
+        if (Array.isArray(titles)) {
+          // to make typescript happy, we need the if check on top of
+          // the assert
+          assert.strictEqual(titles.length, 6)
+          assert.ok(titles.find(_ => _ === 'V1/PERSISTENTVOLUMECLAIM'))
+        }
+      })
+      .then(() => this.app.client.click(selectors.SIDECAR_MODE_BUTTON('hooks')))
+      .then(() => this.app.client.click(selectors.SIDECAR_MODE_BUTTON('manifest')))
+      .then(() => this.app.client.click(selectors.SIDECAR_MODE_BUTTON('values')))
+      .then(() => this.app.client.click(selectors.SIDECAR_MODE_BUTTON('notes')))
       .catch(common.oops(this))
   })
 

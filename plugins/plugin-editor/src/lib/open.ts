@@ -19,7 +19,7 @@ import * as Debug from 'debug'
 import * as path from 'path'
 import * as events from 'events'
 
-import { editor } from 'monaco-editor'
+import { editor as MonacoEditor } from 'monaco-editor'
 
 import { Tab } from '@kui-shell/core/webapp/cli'
 import globalEventBus from '@kui-shell/core/core/events'
@@ -45,7 +45,7 @@ const debug = Debug('plugins/editor/open')
  * Update the code in the editor to use the given text
  *
  */
-const setText = (editor: editor.ICodeEditor, options, execOptions?) => ({
+const setText = (editor: MonacoEditor.ICodeEditor, options, execOptions?) => ({
   code,
   kind
 }: {
@@ -208,7 +208,7 @@ export const openEditor = async (tab: Tab, name: string, options, execOptions) =
    * that instance to show a given entity.
    *
    */
-  const updater = (editor: editor.ICodeEditor) => {
+  const updater = (editor: MonacoEditor.ICodeEditor) => {
     editor['updateText'] = entity => {
       // monaco let's us replace the full range of text, so we don't need
       // an explicit delete of the current text
@@ -296,7 +296,8 @@ export const openEditor = async (tab: Tab, name: string, options, execOptions) =
           namePart.innerText = entity.name
           nameDiv.className = 'is-modified-wrapper'
           isModifiedPart.className = 'is-modified-indicator'
-          isModifiedIcon.className = 'fas fa-asterisk'
+          isModifiedIcon.className = 'fas fa-asterisk larger-text'
+          isModifiedIcon.innerText = '*'
           isModifiedPart.setAttribute('data-balloon', strings.isModifiedIndicator)
           isModifiedPart.setAttribute('data-balloon-pos', 'left')
 

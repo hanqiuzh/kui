@@ -20,7 +20,7 @@ import * as cli from '@kui-shell/core/webapp/cli'
 import * as repl from '@kui-shell/core/core/repl'
 
 import { element, removeAllDomChildren } from '@kui-shell/core/webapp/util/dom'
-import { formatOneListResult } from '@kui-shell/core/webapp/views/table'
+import { formatOneRowResult } from '@kui-shell/core/webapp/views/table'
 import { addBadge, beautify, getSidecar, renderField } from '@kui-shell/core/webapp/views/sidecar'
 import sidecarSelector from '@kui-shell/core/webapp/views/sidecar-selector'
 import { ShowOptions, DefaultShowOptions } from '@kui-shell/core/webapp/views/show-options'
@@ -232,6 +232,7 @@ export const showEntity = async (
         // then the third party rendering took care of it
       } else {
         // to show the sequence graph
+        debug('visualizing sequence')
         const extraCss = entity.exec.components.length < 5 ? 'small-node-count-canvas' : ''
         sequence.className = `${sequence.getAttribute('data-base-class')} ${extraCss}`
 
@@ -243,6 +244,7 @@ export const showEntity = async (
             repl
               .qexec(`wsk action get "${actionName}"`)
               .then(action => {
+                debug('got sequence component', action)
                 const anonymousCode = isAnonymousLet(action)
                 if (anonymousCode) {
                   return anonymousCode.replace(/\s/g, '')
@@ -251,8 +253,12 @@ export const showEntity = async (
                 }
                 // on 404:
               })
-              .catch(() => actionName)
+              .catch(() => {
+                debug('did not get sequence component', actionName)
+                return actionName
+              })
               .then(name => {
+                debug('processing sequence component', name)
                 return {
                   type: 'action',
                   name: actionName.indexOf('/') === -1 ? `/_/${actionName}` : actionName,
@@ -384,23 +390,13 @@ export const showEntity = async (
       if (entity.actions) {
         entity.actions
           .map(fillInActionDetails(entity))
-          .map(
-            formatOneListResult(tab, {
-              excludePackageName: true,
-              alwaysShowType: true
-            })
-          )
+          .map(formatOneRowResult(tab, { excludePackageName: true }))
           .forEach(dom => actions.appendChild(dom))
       }
       if (entity.feeds) {
         entity.feeds
           .map(fillInActionDetails(entity, 'feeds'))
-          .map(
-            formatOneListResult(tab, {
-              excludePackageName: true,
-              alwaysShowType: true
-            })
-          )
+          .map(formatOneRowResult(tab, { excludePackageName: true }))
           .forEach(dom => actions.appendChild(dom))
       }
     }

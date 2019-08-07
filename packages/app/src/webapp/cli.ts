@@ -20,13 +20,20 @@ debug('loading')
 
 import eventBus from '../core/events'
 import { oopsMessage } from '../core/oops'
-import { inBottomInputMode } from '../core/settings'
+import { theme as settings, inBottomInputMode } from '../core/settings'
 import UsageError from '../core/usage-error'
 import { inBrowser, inElectron, isHeadless } from '../core/capabilities'
 import { keys } from './keys'
 import { installContext } from './prompt'
 
-import { Entity, SimpleEntity, isEntitySpec, isMessageBearingEntity } from '../models/entity'
+import {
+  Entity,
+  SimpleEntity,
+  isEntitySpec,
+  isMessageBearingEntity,
+  MixedResponsePart,
+  isMixedResponse
+} from '../models/entity'
 import { CommandHandlerWithEvents } from '../models/command'
 import { ExecOptions, DefaultExecOptions, ParsedOptions } from '../models/execOptions'
 import * as historyModel from '../models/history'
@@ -38,7 +45,7 @@ import { prettyPrintTime } from './util/time'
 import { isHTML } from '../util/types'
 
 import Presentation from './views/presentation'
-import { formatListResult, formatMultiListResult, formatTable } from './views/table'
+import { formatTable } from './views/table'
 
 import {
   Formattable,
@@ -355,7 +362,7 @@ export const setCustomCaret = (block: HTMLElement) => {
  * Set the processing/active status for the given block
  *
  */
-export const setStatus = (block: HTMLElement, status: string) => {
+export const setStatus = (block: HTMLElement, status: 'processing' | 'repl-active' | 'valid-response' | 'error') => {
   if (block) {
     block.classList.remove('processing')
     block.classList.remove('repl-active')
@@ -388,7 +395,7 @@ export const setStatus = (block: HTMLElement, status: string) => {
     element('.repl-prompt-timestamp', block).innerText = new Date().toLocaleTimeString()
 
     // screenshot click handler
-    element('.repl-prompt-right-element-icon', block).onclick = async event => {
+    element('.kui--repl-prompt-buttons--screenshot', block).onclick = async event => {
       // intercept repl's scroll to bottom behavior
       event.stopPropagation()
 
@@ -524,7 +531,7 @@ export const streamTo = (tab: Tab, block: Element) => {
     }
 
     if (UsageError.isUsageError(response)) {
-      previousLine = await response.getFormattedMessage()
+      previousLine = await UsageError.getFormattedMessage(response)
       pre.appendChild(previousLine)
       pre.classList.add('oops')
       pre.setAttribute('data-status-code', response.code.toString())
@@ -732,6 +739,7 @@ export const unlisten = (prompt: HTMLElement) => {
 export const listen = (prompt: HTMLInputElement) => {
   debug('listen', prompt, document.activeElement)
   prompt.readOnly = false
+  prompt.placeholder = settings.placeholder || ''
 
   const grandparent = prompt.parentNode.parentNode as Element
   grandparent.className = `${grandparent.getAttribute('data-base-class')} repl-active`
@@ -913,21 +921,6 @@ export const printResults = (
     if (response && response !== true) {
       if (isTable(response)) {
         await printTable(tab, response, resultDom, execOptions, parsedOptions)
-      } else if (Array.isArray(response)) {
-        /**
-         * some sort of list response; format as a table
-         * @deprecated in favor of new models/table.ts
-         */
-        if (response.length > 0) {
-          const registeredListView = registeredListViews[response[0].type]
-          if (registeredListView) {
-            await registeredListView(tab, response, resultDom, parsedOptions, execOptions)
-            return resultDom.children.length === 0
-          } else {
-            const rows = await formatListResult(tab, response)
-            rows.map(row => resultDom.appendChild(row))
-          }
-        }
       } else if (isHTML(response)) {
         // TODO is this the best way to detect response is a dom??
         // pre-formatted DOM element
@@ -1015,6 +1008,24 @@ export const printResults = (
 
         // we rendered the content
         return true
+      } else if (isMixedResponse(response)) {
+        debug('mixed response')
+        const paragraph = (part: MixedResponsePart) => {
+          if (typeof part === 'string') {
+            const para = document.createElement('p')
+            para.classList.add('kui--mixed-response--text')
+            para.innerText = part
+            return para
+          } else {
+            return part
+          }
+        }
+
+        response.forEach(part => {
+          printResults(block, nextBlock, tab, resultDom, echo, execOptions, parsedOptions, command, evaluator)(
+            paragraph(part)
+          )
+        })
       } else if (typeof response === 'object') {
         // render random json in the REPL directly
         const code = document.createElement('code')
@@ -1031,6 +1042,11 @@ export const printResults = (
 
   let promise: Promise<boolean>
 
+  // print ok if it's an empty table
+  if (isTable(response) && response.body.length === 0) {
+    response = true
+  }
+
   if (isMultiTable(response)) {
     ;(resultDom.parentNode as HTMLElement).classList.add('result-as-table', 'result-as-multi-table', 'result-vertical')
 
@@ -1043,13 +1059,6 @@ export const printResults = (
     // multi-table output; false means that the renderer hasn't placed
     // anything in the DOM; it's up to us here
     promise = Promise.resolve(formatTable(tab, response, resultDom)).then(() => false)
-  } else if (Array.isArray(response) && Array.isArray(response[0])) {
-    /**
-     * multi-table output; false means that the renderer hasn't placed
-     * anything in the DOM; it's up to us here
-     * @deprecated in favor of new models/table.ts
-     */
-    promise = formatMultiListResult(tab, response, resultDom).then(() => false)
   } else {
     promise = render(response, { echo, resultDom })
   }
@@ -1059,37 +1068,6 @@ export const printResults = (
       presentAs(tab, Presentation.FixedSize)
     }
     // say "ok"
-    if (echo) {
-      promise.then(() => {
-        ok(resultDom.parentNode as Element).classList.add('ok-for-list')
-      })
-    }
-  } else if (Array.isArray(response)) {
-    /**
-     * decorate it as a table
-     * @deprecated in favor of new models/table.ts
-     */
-    ;(resultDom.parentNode as HTMLElement).classList.add('result-as-table')
-
-    if (response.length > 0 && response[0].noEntityColors) {
-      // client wants control over entity-cell coloring
-      resultDom.classList.add('result-table-with-custom-entity-colors')
-    }
-
-    if (!Array.isArray(response[0]) && response.length > 0) {
-      resultDom.classList.add('result-table')
-      if (isPopup()) {
-        presentAs(tab, Presentation.FixedSize)
-      }
-    } else {
-      ;(resultDom.parentNode as HTMLElement).classList.add('result-as-multi-table')
-      if (response[0] && response[0][0] && response[0][0].flexWrap) {
-        ;(resultDom.parentNode as HTMLElement).classList.add('result-as-multi-table-flex-wrap')
-      }
-    }
-
-    // say "ok"
-    ;(resultDom.parentNode as HTMLElement).classList.add('result-vertical')
     if (echo) {
       promise.then(() => {
         ok(resultDom.parentNode as Element).classList.add('ok-for-list')
@@ -1115,10 +1093,10 @@ export const printResults = (
         // entity type
         const prettyType =
           isEntitySpec(response) &&
-          (response.type ||
-            response.kind ||
+          (response.kind ||
             response.prettyType ||
             response.prettyKind ||
+            response.type ||
             (response[0] && response[0].title) ||
             (response[0] && response[0][0] && response[0][0].title))
 
@@ -1256,7 +1234,7 @@ export const oops = (command: string, block?: HTMLElement, nextBlock?: HTMLEleme
   if (err['hide']) {
     // we were instructed not to show any message
   } else if (UsageError.isUsageError(err)) {
-    oopsDom.appendChild(await err.getFormattedMessage())
+    oopsDom.appendChild(await UsageError.getFormattedMessage(err))
     /* } else if (isHTML(err.message)) {
     // err.message is a DOM
     oopsDom.appendChild(err.message) */
@@ -1277,7 +1255,7 @@ export const oops = (command: string, block?: HTMLElement, nextBlock?: HTMLEleme
     // we'll go with our formatted message
     // wrap in a span so that drag text selection works; see shell issue #249
     const message = oopsMessage(err)
-    const span = document.createElement('span')
+    const span = document.createElement('pre')
     span.appendChild(document.createTextNode(message))
     oopsDom.appendChild(span)
   }

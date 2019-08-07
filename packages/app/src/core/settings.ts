@@ -31,13 +31,23 @@ interface Theme {
   gettingStarted?: string
   ogDescription?: string
 
+  /** prompt placeholder text (default: '') */
+  placeholder?: string
+
+  /** a short description of the product */
+  byline?: string
+
   tableStyle?: keyof typeof TableStyle
 
   largeIcon: string
 
   userAgent?: string
 
+  /** final polling interval (default: 5s), watcher will stop increasing the interval beyond this. */
   tablePollingInterval?: number
+
+  /** millis to wait for webpack->proxy connection before warning the user to explain the delay (default: 750ms) */
+  millisBeforeProxyConnectionWarning?: number
 
   defaultTheme: string
   themes: { name: string; css: string; description?: string; style: string }[]
