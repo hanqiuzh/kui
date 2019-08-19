@@ -24,6 +24,7 @@ import { CommandRegistrar, EvaluatorArgs } from '@kui-shell/core/models/command'
 import { ExecOptions, ParsedOptions } from '@kui-shell/core/models/execOptions'
 import { Row, Table, formatWatchableTable, isTable, isMultiTable } from '@kui-shell/core/webapp/models/table'
 import { CodedError } from '@kui-shell/core/models/errors'
+import repl = require('@kui-shell/core/core/repl')
 
 import { withRetryOn404 } from '../util/retry'
 import { flatten, isDirectory } from '../util/util'
@@ -32,15 +33,11 @@ import { CRDResource, KubeResource } from '../model/resource'
 import { States, FinalState } from '../model/states'
 
 import { formatContextAttr, formatEntity } from '../view/formatEntity'
-const debug = Debug('k8s/controller/status')
-debug('loading')
-import repl = require('@kui-shell/core/core/repl')
 
-const strings = {
-  allContexts: 'Resources Across All Contexts',
-  currentContext: 'This is your current context',
-  notCurrentContext: 'This is not your current context'
-}
+import i18n from '@kui-shell/core/util/i18n'
+const strings = i18n('plugin-k8s')
+
+const debug = Debug('k8s/controller/status')
 
 /** administartive core controllers that we want to ignore */
 const adminCoreFilter = '-l provider!=kubernetes'
@@ -276,7 +273,7 @@ const getStatusForKnownContexts = (execOptions: ExecOptions, parsedOptions: Pars
           // icon to represent kubernetes cluster/context
           const thisContextIsCurrent = (await currentContext) === name
           const tableCSS = thisContextIsCurrent ? 'selected-row' : ''
-          const balloon = thisContextIsCurrent ? strings.currentContext : strings.notCurrentContext
+          const balloon = thisContextIsCurrent ? strings['currentContext'] : strings['notCurrentContext']
 
           if (!parsedOptions.multi) {
             return Promise.all(resources.map(formatEntity(parsedOptions, name)))
@@ -305,10 +302,10 @@ const getStatusForKnownContexts = (execOptions: ExecOptions, parsedOptions: Pars
       return []
     } else {
       const header = headerRow({
-        title: parsedOptions.all ? strings.allContexts : await currentContext,
+        title: parsedOptions.all ? strings['allContexts'] : await currentContext,
         context: true,
         tableCSS: 'selected-row',
-        balloon: strings.currentContext
+        balloon: strings['currentContext']
       })
       return [header].concat(resources)
     }
@@ -382,7 +379,7 @@ const getDirectReferences = (command: string) => async ({
   const name = argvNoOptions[idx + 1]
   const namespace = parsedOptions.namespace || parsedOptions.n || 'default'
   const finalState: FinalState = (parsedOptions as FinalStateOptions)['final-state'] || FinalState.NotPendingLike
-  debug('getDirectReferences', file, name)
+  // debug('getDirectReferences', file, name)
 
   /** format a --namespace cli option for the given kubeEntity */
   const ns = ({ metadata = {} } = {}) => {
@@ -523,7 +520,7 @@ const getDirectReferences = (command: string) => async ({
         ? parseYAML(execOptions.parameters[passedAsParameter[1].slice(1)]) // yaml given programatically
         : flatten((await fetchFileString(file)).map(_ => parseYAML(_)))
       ).filter(_ => _) // in case there are empty paragraphs;
-      debug('specs', specs)
+      // debug('specs', specs)
 
       const kubeEntities = Promise.all(
         specs.map(spec => {
@@ -537,7 +534,7 @@ const getDirectReferences = (command: string) => async ({
       if (execOptions.raw) {
         return kubeEntities
       } else {
-        debug('kubeEntities', await kubeEntities)
+        // debug('kubeEntities', await kubeEntities)
         return {
           headerRow: headerRow({ title: file }),
           entities: kubeEntities
@@ -555,7 +552,7 @@ const findControlledResources = async (
   args: EvaluatorArgs,
   kubeEntities: KubeResource[]
 ): Promise<Row[] | KubeResource[]> => {
-  debug('findControlledResources', kubeEntities)
+  // debug('findControlledResources', kubeEntities)
 
   const raw = Object.assign({}, args.execOptions, { raw: true })
   const pods = removeDuplicateResources(
@@ -624,7 +621,7 @@ export const status = (command: string) => async (
   args: EvaluatorArgs
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
 ): Promise<any> => {
-  debug('constructing status', args)
+  // debug('constructing status', args)
 
   const doWatch = args.parsedOptions.watch || args.parsedOptions.w
 
@@ -632,7 +629,7 @@ export const status = (command: string) => async (
 
   const direct = await getDirectReferences(command)(args)
 
-  debug('getDirectReferences', direct)
+  // debug('getDirectReferences', direct)
   if (Array.isArray(direct)) {
     const statusResult =
       args.parsedOptions.multi || Array.isArray(direct[0])
@@ -652,15 +649,15 @@ export const status = (command: string) => async (
 
   const controlled = await findControlledResources(args, directEntities)
 
-  debug('direct', maybe, directEntities)
-  debug('controlled', controlled)
+  // debug('direct', maybe, directEntities)
+  // debug('controlled', controlled)
 
   if (controlled.length === 0) {
     if (args.execOptions.raw) {
       return direct
     } else {
       return Promise.all(directEntities.map(formatEntity(args.parsedOptions))).then(formattedEntities => {
-        debug('formatted entities', formattedEntities)
+        // debug('formatted entities', formattedEntities)
         if (direct.headerRow) {
           const statusResult = statusTable([direct.headerRow].concat(...formattedEntities))
           return doWatch && isTable(statusResult)

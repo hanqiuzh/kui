@@ -30,7 +30,8 @@ exports.defaultModeForGet = 'summary'
  */
 exports.waitForGreen = async (app, selector) => {
   const notRepeatingPulse = 'td:not(.repeating-pulse)'
-  const badge = `${selector} ${notRepeatingPulse} badge.green-background`
+  const badge = `${selector} badge`
+  const greenBadge = `${selector} ${notRepeatingPulse} badge.green-background`
   const yellowNotBlinkyBadge = `${selector} ${notRepeatingPulse} badge.yellow-background`
   const yellowBadge = `${selector} badge.yellow-background`
 
@@ -42,13 +43,13 @@ exports.waitForGreen = async (app, selector) => {
   try {
     await app.client.waitForExist(yellowBadge, process.env.TIMEOUT || 60000, true)
   } catch (err) {
-    console.log(`Creation is still yellow after ${process.env.TIMEOUT || 60000}`)
-    const text = await app.client.getText(yellowBadge)
-    console.log(`Creatation status ${text}`)
+    console.log(`Creation is still yellow after ${process.env.TIMEOUT || 60000} ${selector}`)
+    const text = await app.client.getText(badge)
+    console.log(`Creation status ${text}`)
   }
 
-  await app.client.waitForExist(badge, process.env.TIMEOUT || 60000)
-  return badge
+  await app.client.waitForExist(greenBadge, process.env.TIMEOUT || 60000)
+  return greenBadge
 }
 
 /**
@@ -61,7 +62,7 @@ exports.waitForRed = async (app, selector) => {
   const yellowNotBlinkyBadge = `${selector} ${notRepeatingPulse} badge.yellow-background`
   const yellowBadge = `${selector} badge.yellow-background`
 
-  // the green badge should disapper, wait for 5 seconds at max
+  // the green badge should disappear, wait for 5 seconds at max
   try {
     await app.client.waitForExist(badge.replace('red', 'green'), 5000, true)
   } catch (err) {
@@ -85,15 +86,15 @@ exports.waitForRed = async (app, selector) => {
   return badge
 }
 
-exports.createNS = (prefix = '') => `${prefix}${uuid()}`
+exports.createNS = (prefix = '') => `${prefix}${uuid()}-kui`
 
 exports.allocateNS = (ctx, ns, theCli = cli) => {
-  it(`should create a namespace ${ns} `, () => {
+  it(`should create a namespace ${ns} for test: ${ctx.title}`, () => {
     return theCli
       .do(`kubectl create namespace ${ns}`, ctx.app)
       .then(cli.expectOKWithCustom({ selector: selectors.BY_NAME(ns) }))
       .then(selector => exports.waitForGreen(ctx.app, selector))
-      .catch(common.oops(ctx))
+      .catch(common.oops(ctx, true))
   })
 }
 
@@ -105,7 +106,7 @@ exports.deleteNS = (ctx, ns, theCli = cli) => {
         .do(`kubectl delete namespace ${ns}`, ctx.app)
         .then(cli.expectOKWithCustom({ selector: ui.selectors.BY_NAME(ns) }))
         .then(selector => exports.waitForRed(ctx.app, selector))
-        .catch(common.oops(ctx))
+        .catch(common.oops(ctx, true))
     })
   }
 }
@@ -140,6 +141,34 @@ exports.waitTillNone = (kind, theCli = cli, name = '', okToSurvive, inNamespace 
   })
 
 /**
+ * Keep poking the given kind till no more such entities exist
+ *
+ */
+exports.waitTillTerminating = (kind, theCli = cli, name, inNamespace) => app =>
+  new Promise(resolve => {
+    // fetch the entities
+    const fetch = () =>
+      theCli
+        .do(`kubectl get "${kind}" ${name} ${inNamespace}`, app, {
+          errOk: theCli.exitCode(404)
+        })
+        .then(res => {
+          return /Terminating/.test(res.output)
+        })
+
+    const iter = async () => {
+      const isTerminating = await fetch()
+      if (isTerminating) {
+        resolve()
+      } else {
+        setTimeout(iter, 3000)
+      }
+    }
+
+    iter()
+  })
+
+/**
  * Confirm that the table title matches
  *
  */
@@ -151,4 +180,16 @@ exports.assertTableTitleMatches = async function(self, tableSelector, expectedTi
   )
 
   assert.strictEqual(tableTitle.toLowerCase(), expectedTitle)
+}
+
+/**
+ * Type slowly, this helps with some odd webpack+proxy issues
+ *
+ */
+exports.typeSlowly = async (app, txt) => {
+  for (let idx = 0; idx < txt.length; idx++) {
+    await new Promise(resolve => setTimeout(resolve, 20))
+    await app.client.keys(txt.charAt(idx))
+  }
+  await new Promise(resolve => setTimeout(resolve, 20))
 }

@@ -16,7 +16,7 @@
 
 const common = require('./common')
 const assert = require('assert')
-const timeout = process.env.TIMEOUT || 60000
+const timeout = Math.max(5000, process.env.TIMEOUT || 60000)
 const constants = {
   API_HOST: process.env.API_HOST,
   // CLI_PLACEHOLDER: process.env.CLI_PLACEHOLDER || 'enter your command',
@@ -74,6 +74,7 @@ selectors.SIDECAR_BADGES = `${selectors.SIDECAR} .sidecar-header .badges`
 selectors.SIDECAR_CUSTOM_CONTENT = `${selectors.SIDECAR} .custom-content`
 selectors.SIDECAR_MODE_BUTTONS = `${selectors.SIDECAR} .sidecar-bottom-stripe-mode-bits .sidecar-bottom-stripe-button` // all mode buttons in the bottom stripe
 selectors.SIDECAR_MODE_BUTTON = mode => `${selectors.SIDECAR_MODE_BUTTONS}[data-mode="${mode}"]` // specific mode button in the bottom stripe
+selectors.SIDECAR_MODE_BUTTON_SELECTED = mode => `${selectors.SIDECAR_MODE_BUTTON(mode)}.bx--tabs__nav-item--selected`
 selectors.SIDECAR_BACK_BUTTON = `${selectors.SIDECAR} .sidecar-bottom-stripe-back-button` // back button in the bottom stripe
 selectors.SIDECAR_MAXIMIZE_BUTTON = `${selectors.SIDECAR} .toggle-sidecar-maximization-button` // maximize button in the bottom stripe
 selectors.SIDECAR_CLOSE_BUTTON = `${selectors.SIDECAR} .sidecar-bottom-stripe-close` // close button in the bottom stripe
@@ -85,10 +86,15 @@ selectors.PROCESSING_N = N => `${selectors.PROMPT_BLOCK_N(N)}.processing`
 selectors.CURRENT_PROMPT = `${selectors.CURRENT_PROMPT_BLOCK} input`
 selectors.PROMPT_N = N => `${selectors.PROMPT_BLOCK_N(N)} input`
 selectors.OUTPUT_N = N => `${selectors.PROMPT_BLOCK_N(N)} .repl-result`
-selectors.OUTPUT_LAST = `${selectors.PROMPT_BLOCK}:nth-last-child(2) .repl-result`
+selectors.PROMPT_BLOCK_LAST = `${selectors.PROMPT_BLOCK}:nth-last-child(2)`
+selectors.PROMPT_BLOCK_FINAL = `${selectors.PROMPT_BLOCK}:nth-last-child(1)`
+selectors.PROMPT_FINAL = `${selectors.PROMPT_BLOCK_FINAL} input`
+selectors.OUTPUT_LAST = `${selectors.PROMPT_BLOCK_LAST} .repl-result`
 selectors.LIST_RESULTS_N = N => `${selectors.PROMPT_BLOCK_N(N)} .repl-result .entity:not(.header-row)`
 selectors.LIST_RESULTS_BY_NAME_N = N => `${selectors.LIST_RESULTS_N(N)} .entity-name`
 selectors.LIST_RESULT_BY_N_FOR_NAME = (N, name) => `${selectors.LIST_RESULTS_N(N)}[data-name="${name}"]`
+selectors.TABLE_CELL = (rowKey, cellKey) =>
+  `.entity:not(.header-row)[data-name="${rowKey}"] .cell-inner[data-key="${cellKey}"]`
 selectors.BY_NAME = name => `.entity:not(.header-row)[data-name="${name}"]`
 selectors.LIST_RESULT_BY_N_AND_NAME = (N, name) => `${selectors.LIST_RESULT_BY_N_FOR_NAME(N, name)} .entity-name`
 selectors.OK_N = N => `${selectors.PROMPT_BLOCK_N(N)} .repl-output .ok`
@@ -102,7 +108,7 @@ const expectOK = (appAndCount, opt) => {
 
   return (
     app.client
-      .waitForVisible(selectors.PROMPT_N(N), timeout) // wait for the next prompt to appear
+      .waitForVisible(selectors.PROMPT_N(N), timeout - 5000) // wait for the next prompt to appear
       .then(() => app.client.getAttribute(selectors.PROMPT_N(N), 'placeholder')) // it should have a placeholder text
       // .then(attr => assert.strictEqual(attr, constants.CLI_PLACEHOLDER)) //      ... verify that
       .then(() => app.client.getValue(selectors.PROMPT_N(N), timeout)) // it should have an empty value
@@ -161,24 +167,11 @@ const expectOK = (appAndCount, opt) => {
         }
       })
       .then(res => (opt && (opt.selector || opt.passthrough) ? res : app)) // return res rather than app, if requested
-      .catch(err => {
-        if (!opt || !opt.errOk) {
-          common.oops({ app: app })(err)
-        } else {
-          throw err
-        }
-        // return expectOK(appAndCount, opt)
-      })
   )
 }
 
 /** grab focus for the repl */
 const grabFocus = async app => {
-  if (process.env.MOCHA_RUN_TARGET === 'webpack' && process.env.KUI_USE_PROXY === 'true') {
-    // wait for the proxy session to be established
-    await app.client.waitForExist(`${selectors.CURRENT_TAB}.kui--session-init-done`)
-  }
-
   return app.client
     .click(selectors.CURRENT_PROMPT_BLOCK)
     .then(() => app.client.waitForEnabled(selectors.CURRENT_PROMPT_BLOCK))
@@ -193,20 +186,27 @@ exports.cli = {
    * Execute a CLI command, and return the data-input-count of that command
    *
    */
-  do: async (cmd, app, noNewline = false) => {
+  do: async (cmd, app, noNewline = false, noCopyPaste = false) => {
     return app.client
-      .waitForExist(selectors.CURRENT_PROMPT_BLOCK)
+      .waitForExist(selectors.CURRENT_PROMPT_BLOCK, timeout - 5000)
       .then(() => grabFocus(app))
       .then(() => app.client.getAttribute(selectors.CURRENT_PROMPT_BLOCK, 'data-input-count'))
-      .then(count =>
-        app.client
-          .getValue(selectors.CURRENT_PROMPT)
-          .then(currentValue => app.client.setValue(selectors.CURRENT_PROMPT, `${currentValue}${cmd}`))
-          .then(() => {
-            if (noNewline !== true) app.client.keys(keys.ENTER)
-          })
-          .then(() => ({ app: app, count: parseInt(count) }))
-      )
+      .then(async count => {
+        if (!noCopyPaste && cmd.length > 1) {
+          // use the clipboard for a fast path
+          await app.client.execute(
+            text => navigator.clipboard.writeText(text).then(() => document.execCommand('paste')),
+            cmd
+          )
+        } else {
+          // slow path
+          const currentValue = await app.client.getValue(selectors.CURRENT_PROMPT)
+          const doThis = `${currentValue}${cmd}`
+          await app.client.setValue(selectors.CURRENT_PROMPT, doThis)
+        }
+        if (noNewline !== true) await app.client.keys(keys.ENTER)
+        return { app: app, count: parseInt(count) }
+      })
   },
 
   /**
@@ -228,9 +228,7 @@ exports.cli = {
 
   /** wait for the repl to be active */
   waitForRepl: async app => {
-    // if it takes more than 10 seconds to have an active prompt,
-    // treat that as a failure
-    await app.client.waitForEnabled(selectors.CURRENT_PROMPT, 10000)
+    await app.client.waitForEnabled(selectors.CURRENT_PROMPT)
     return app
   },
 
@@ -340,7 +338,12 @@ exports.waitForXtermInput = (app, N) => {
 exports.getTextContent = (app, selector) => {
   return app.client
     .execute(selector => {
-      return document.querySelector(selector).textContent
+      try {
+        return document.querySelector(selector).textContent
+      } catch (err) {
+        console.error('error in getTextContent', err)
+        // intentionally returning undefined
+      }
     }, selector)
     .then(_ => _.value)
 }
@@ -494,16 +497,40 @@ exports.sidecar = {
       .then(() => app)
 }
 
+exports.expectText = (app, expectedText) => async selector => {
+  const actualText = await app.client.getText(selector)
+  assert.strictEqual(actualText, expectedText)
+}
+
 /** get the monaco editor text */
 exports.getValueFromMonaco = async (app /*: Application */, prefix = '') => {
-  const selector = `${prefix} .monaco-editor-wrapper`
-  await app.client.waitForExist(selector)
+  const editor = '.monaco-editor-wrapper'
+  const selector = prefix ? `${prefix} ${editor}` : editor
+  try {
+    await app.client.waitForExist(selector, timeout - 5000)
+  } catch (err) {
+    console.error('cannot find editor', err)
+    await app.client.getHTML(selectors.SIDECAR).then(html => {
+      console.log('here is the content of the sidecar:')
+      console.log(html)
+    })
+    throw err
+  }
 
   return app.client
     .execute(selector => {
-      return document.querySelector(selector)['editor'].getValue()
+      try {
+        return document.querySelector(selector)['editor'].getValue()
+      } catch (err) {
+        console.error('error in getValueFromMonaco1', err)
+        // intentionally returning undefined
+      }
     }, selector)
     .then(_ => _.value)
+    .catch(err => {
+      console.error('error in getValueFromMonaco2', err)
+      // intentionally returning undefined
+    })
 }
 
 /**

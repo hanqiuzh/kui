@@ -39,7 +39,7 @@ export class Row {
 
   setUnselected?: () => void
 
-  nameCss?: string
+  nameCss?: string | string[]
 
   key?: string
 
@@ -60,6 +60,8 @@ export class Row {
   beforeAttributes?: Cell[]
 
   rowCSS?: string | string[]
+
+  onclickExec?: 'pexec' | 'qexec'
 
   onclick?: any // eslint-disable-line @typescript-eslint/no-explicit-any
 

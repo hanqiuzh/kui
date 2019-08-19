@@ -18,8 +18,6 @@
 
 import * as Debug from 'debug'
 
-import installReplFocusHandlers from './repl-focus'
-
 import {
   isVisible as isSidecarVisible,
   toggle,
@@ -74,6 +72,9 @@ const getTabCloser = (tab: Tab) => getTabButton(tab).querySelector('.left-tab-st
  *
  */
 class TabState {
+  /** is the tab closed? */
+  closed: boolean
+
   /** environment variables */
   private _env: Record<string, string>
 
@@ -261,9 +262,11 @@ const closeTab = (tab = getCurrentTab()) => {
   const tabButton = getTabButton(tab)
   const tabId = parseInt(tabButton.getAttribute('data-tab-button-index'), 10)
 
-  if (tab['state'].jobs) {
-    ;(tab['state'] as TabState).jobs.forEach(job => job.abort())
+  const tabState: TabState = tab['state']
+  if (tabState.jobs) {
+    tabState.jobs.forEach(job => job.abort())
   }
+  tabState.closed = true
 
   tab.parentNode.removeChild(tab)
   tabButton.parentNode.removeChild(tabButton)
@@ -275,7 +278,13 @@ const closeTab = (tab = getCurrentTab()) => {
 
   reindexTabs()
 
+  eventBus.emit('/tab/close', tab)
+
   return true
+}
+
+function isElement(target: EventTarget): target is Element {
+  return (target as Element).classList !== undefined
 }
 
 /**
@@ -291,10 +300,14 @@ const perTabInit = (tab: Tab, doListen = true) => {
     listen(getCurrentPrompt(tab))
   }
 
-  // we want to focus the current repl input when the user clicks, but
-  // the logic here is a bit complicated; so we'll push the logic out
-  // to a separate source file
-  installReplFocusHandlers()
+  // keep repl prompt focused, if possible
+  tab.querySelector('.repl-inner').addEventListener('click', (evt: MouseEvent) => {
+    if (isElement(evt.target)) {
+      if (evt.target.classList.contains('repl-inner') || evt.target.classList.contains('repl-output')) {
+        getCurrentPrompt(tab).focus()
+      }
+    }
+  })
 
   // tab close button
   getTabCloser(tab).onclick = (event: MouseEvent) => {

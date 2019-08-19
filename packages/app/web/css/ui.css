@@ -198,6 +198,12 @@ body:not(.subwindow) repl.sidecar-visible .repl-block,
 .scrollable-auto[data-table-max-rows="10"] {
   max-height: calc(10 * 3em + 2px);
 }
+.kui--repl-subblock:not(:first-child) {
+  padding-top: 1em;
+}
+.kui--repl-subblock:not(:last-child) {
+  padding-bottom: 1em;
+}
 .repl-result {
   display: flex;
   flex-wrap: wrap;
@@ -789,6 +795,7 @@ sidecar .sidecar-bottom-stripe-toolbar .sidecar-bottom-stripe-mode-bits {
   display: flex;
   align-items: center;
   flex: 1;
+  overflow: hidden;
 }
 sidecar .sidecar-bottom-stripe-toolbar .sidecar-toolbar-text svg path {
   fill: var(--color-sidecar-toolbar-foreground);
@@ -796,6 +803,12 @@ sidecar .sidecar-bottom-stripe-toolbar .sidecar-toolbar-text svg path {
 sidecar .sidecar-bottom-stripe-toolbar .sidecar-toolbar-text:not([data-type]),
 sidecar .sidecar-bottom-stripe-toolbar .sidecar-bottom-stripe-mode-bits.sidecar-bottom-stripe-button-container:empty {
   display: none !important;
+}
+sidecar
+  .sidecar-bottom-stripe-toolbar
+  .sidecar-toolbar-text:not([data-type])
+  + .sidecar-bottom-stripe-mode-bits.sidecar-bottom-stripe-button-container:not(:empty) {
+  flex: 1;
 }
 sidecar .sidecar-bottom-stripe-toolbar .sidecar-toolbar-text-icon,
 sidecar .sidecar-bottom-stripe-toolbar .sidecar-toolbar-text-content {
@@ -816,9 +829,11 @@ sidecar .sidecar-bottom-stripe-toolbar .sidecar-toolbar-text[data-type="error"] 
 }
 sidecar .sidecar-bottom-stripe-toolbar .sidecar-toolbar-text .sidecar-toolbar-text-content {
   font-size: 0.75em;
-  display: flex;
-  align-items: center;
+  display: block;
   letter-spacing: 0.32px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 sidecar .sidecar-bottom-stripe-toolbar .sidecar-bottom-stripe-button {
   display: flex;
@@ -840,7 +855,7 @@ sidecar .sidecar-bottom-stripe-toolbar .graphical-icon svg path {
 sidecar .sidecar-bottom-stripe-toolbar .sidecar-bottom-stripe-mode-bits.sidecar-bottom-stripe-button-container {
   padding: 0 1em;
   display: flex;
-  flex: 1;
+  flex: initial;
 }
 sidecar .sidecar-bottom-stripe-toolbar .fill-container.flush-right > * + * {
   margin-left: 1.5em;
@@ -1435,6 +1450,9 @@ pre.monospace {
   /* intended for fontawesome table cells */
   width: 2em;
 }
+.radio-button-width {
+  width: 3em !important;
+}
 .double-icon-width {
   /* intended for fontawesome table cells */
   width: 4em;
@@ -1539,6 +1557,7 @@ sidecar .result-as-table .big-top-pad:first-child {
   padding: 0 !important;
   margin: 0 !important;
   border: none !important;
+  min-height: 0; /* important for firefox */
 }
 .not-displayed {
   display: none !important;
@@ -2446,13 +2465,15 @@ sidecar [data-balloon]:after {
 sidecar.minimized {
   flex: 0 0 calc(0.375rem * 2 + 0.75rem); /* designed to match the ? in the header */
   align-items: stretch;
-  opacity: 0.9;
 }
 sidecar.minimized header.sidecar-header {
   display: none;
 }
 sidecar.minimized .header-left-bits {
   overflow: visible;
+}
+sidecar .sidecar-header-icon-wrapper > span {
+  padding: 0 0.5em;
 }
 sidecar.minimized .sidecar-header-icon-wrapper {
   width: calc(0.375rem * 2 + 0.75rem); /* match sidecar.minimized flex-basis */
@@ -2503,6 +2524,8 @@ sidecar.minimized .sidecar-bottom-stripe {
   box-shadow: none;
   flex: 1;
   flex-direction: column;
+  border-left: 1px solid var(--color-base03);
+  border-bottom: none;
 }
 sidecar.minimized .sidecar-bottom-stripe-button:not(.sidecar-bottom-stripe-close) {
   /*flex: 0;*/
@@ -2516,7 +2539,6 @@ sidecar.minimized .sidecar-bottom-stripe-button.sidecar-bottom-stripe-close {
 sidecar.minimized .graphical-icon {
   justify-content: center;
   transform: scaleX(-1);
-  mix-blend-mode: difference;
   height: unset !important;
   padding: 0 !important;
 }
@@ -2611,6 +2633,10 @@ sidecar .usage-error-wrapper .hideable {
 .page-content {
   flex: 1;
 }
+.page-content hr {
+  margin: 2em 1em;
+  border-color: var(--color-ui-04);
+}
 .page-content img {
   max-width: 100%;
 }
@@ -2630,7 +2656,6 @@ sidecar .usage-error-wrapper .hideable {
   font-weight: 300;
   letter-spacing: 0;
   line-height: 1.25;
-  margin: -1.15em 0 0 -3px;
   padding: 0;
   transition: 0.25s cubic-bezier(0.5, 0, 0.1, 1);
 }
@@ -2811,10 +2836,10 @@ sidecar.rule-enabled-false .sidecar-header-icon,
   fill: var(--color-support-03-darker);
 }
 .cyan-text {
-  color: var(--color-cyan);
+  color: var(--color-cyan) !important;
 }
 .cyan-text > svg path {
-  fill: var(--color-cyan);
+  fill: var(--color-cyan) !important;
 }
 
 sidecar.activation-success-false .sidecar-header-icon,
@@ -2860,9 +2885,6 @@ badge.clickable:not(.badge-as-fontawesome):hover {
   color: var(--color-text-01);
   background: var(--color-stripe-02);
   transition: background-color 300ms ease-in-out, color 300ms ease-in-out;
-}
-body[kui-theme-style="dark"] .sidecar-bottom-stripe {
-  color: var(--color-text-01);
 }
 .sidecar-non-window-buttons .sidecar-bottom-stripe-button:last-child .graphical-icon {
   border-right: 1px solid var(--color-table-border1);
@@ -3045,6 +3067,10 @@ body {
   --color-ui-05: var(--color-base04);
   --color-ui-06: var(--color-base02);
 
+  /* e.g. xterm ANSI colors; in case themes want a light yellow for
+   badges, and a darker yellow for text */
+  --color-yellow-text: var(--color-yellow);
+
   --color-table-border1: rgba(255, 255, 255, 0.35);
   --color-table-border2: rgba(255, 255, 255, 0.5);
   --color-table-border3: var(--color-ui-04);
@@ -3073,7 +3099,7 @@ body {
   --color-text-02: var(--color-base04);
 
   --color-sidecar-background: var(--color-ui-02);
-  --color-sidecar-border: #e4e4e4;
+  --color-sidecar-border: var(--color-ui-04);
   --color-sidecar-header: var(--color-ui-01);
 
   --color-selection-background: var(--color-base04);
@@ -3248,4 +3274,9 @@ body.kui--bottom-input tab > .kui--rows > .kui--columns {
 
 #offline-button {
   display: none;
+}
+
+#openwhisk-api-host,
+#openwhisk-namespace {
+  pointer-events: none;
 }

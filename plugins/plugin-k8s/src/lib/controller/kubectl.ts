@@ -44,7 +44,6 @@ import { FinalState } from '../model/states'
 import { Table, MultiTable, formatWatchableTable, isTable, isMultiTable } from '@kui-shell/core/webapp/models/table'
 import { Delete } from '@kui-shell/core/webapp/models/basicModels'
 
-import { redactJSON, redactYAML } from '../view/redact'
 import { registry as formatters } from '../view/registry'
 import { preprocessTable, formatTable } from '../view/formatTable'
 import { deleteResourceButton } from '../view/modes/crud'
@@ -53,6 +52,9 @@ import { status as statusImpl } from './status'
 import helmGet from './helm/get'
 
 import repl = require('@kui-shell/core/core/repl')
+
+import i18n from '@kui-shell/core/util/i18n'
+const strings = i18n('plugin-k8s')
 
 // eslint-disable-next-line @typescript-eslint/no-empty-interface
 interface KubeExecOptions extends ExecOptions {
@@ -133,6 +135,7 @@ const possiblyExportCredentials = (execOptions: KubeExecOptions, env: NodeJS.Pro
 const shouldWeDisplayAsTable = (verb: string, entityType: string, output: string, options: ParsedOptions) => {
   const hasTableVerb =
     verb === 'ls' ||
+    verb === 'history' ||
     verb === 'search' ||
     verb === 'list' ||
     verb === 'get' ||
@@ -217,30 +220,12 @@ const table = (
 const usage = (command: string): UsageModel => ({
   title: command,
   command,
-  strict: command,
-  onlyEnforceOptions: ['-f'],
-  noHelp: true, // kubectl and helm both provide their own -h output
-  docs: `Execute ${command} commands`,
-  optional: [
-    {
-      name: '-f',
-      file: true,
-      docs: 'Filename, directory, or URL to files to use to create the resource'
-    }
-  ]
+  configuration: {
+    // kubectl and helm don't have short option combining semantics
+    'short-option-groups': false
+  },
+  noHelp: true // kubectl and helm both provide their own -h output
 })
-
-const prepareUsage = async (command: string): Promise<UsageModel> => {
-  debug('prepareUsage', command)
-
-  try {
-    const usage: UsageError = await repl.qexec(`${command} -h`, undefined, undefined, { failWithUsage: true })
-    return usage.getUsageModel()
-  } catch (err) {
-    console.error('Error preparing usage')
-    return undefined
-  }
-}
 
 /**
  * Spawn a local executable
@@ -274,16 +259,6 @@ const executeLocally = (command: string) => (opts: EvaluatorArgs) =>
     const verb = command === 'helm' && argv[1] === 'repo' ? argv[2] : argv[1]
     const entityType = command === 'helm' ? command : verb && verb.match(/log(s)?/) ? verb : argv[2]
     const entity = command === 'helm' ? argv[2] : entityType === 'secret' ? argv[4] : argv[3]
-
-    if (!isHeadless() && isKube && verb === 'edit') {
-      debug('redirecting kubectl edit to shell')
-      execOptions.exec = 'qexec'
-      repl
-        .qexec(`! ${rawCommand}`, block, undefined, Object.assign({}, execOptions, { createOutputStream }))
-        .then(resolve)
-        .catch(reject)
-      return
-    }
 
     //
     // output format option
@@ -397,7 +372,7 @@ const executeLocally = (command: string) => (opts: EvaluatorArgs) =>
       // synchronous, and --wait defaults to true
       argvWithFileReplacements.push('--wait=false')
     }
-    debug('argvWithFileReplacements', argvWithFileReplacements)
+    // debug('argvWithFileReplacements', argvWithFileReplacements)
 
     const env = Object.assign({}, process.env)
     const cleanupCallback = await possiblyExportCredentials(execOptions as KubeExecOptions, env)
@@ -415,14 +390,21 @@ const executeLocally = (command: string) => (opts: EvaluatorArgs) =>
 
     const commandForSpawn = command === 'helm' ? await pickHelmClient(env) : command
     const child = spawn(commandForSpawn, argvWithFileReplacements, {
-      env,
-      shell: true
+      env
     })
 
-    const file = options.f || options.filename
-    const hasFileArg = file !== undefined
+    // this is needed e.g. to handle ENOENT; otherwise the kui process may die with an uncaught exception
+    child.on('error', (err: Error) => {
+      console.error('error spawning kubectl', err)
+      reject(err)
+    })
 
-    const isProgrammatic = file && file.charAt(0) === '!'
+    // the boolean type check is to guard against yargs-parser going crazy.
+    // see https://github.com/IBM/kui/issues/2332
+    const file = options.f || options.filename
+    const hasFileArg = file !== undefined && typeof file !== 'boolean'
+
+    const isProgrammatic = hasFileArg && file.charAt(0) === '!'
     const programmaticResource = isProgrammatic && execOptions.parameters[file.slice(1)]
     if (isProgrammatic) {
       const param = file.slice(1)
@@ -464,20 +446,17 @@ const executeLocally = (command: string) => (opts: EvaluatorArgs) =>
                 debug('resource not found after status check, but that is ok because that is what we wanted')
                 return out
               } else {
-                throw err
+                console.error('error constructing status', err)
+                return err
               }
             })
         } else {
           return Promise.resolve(true)
         }
       } else if (code && code !== 0) {
-        return Promise.reject(
-          new UsageError({
-            code,
-            message: stderr || `${command} exited with an error`,
-            usage: await prepareUsage(command)
-          })
-        )
+        const error: CodedError = new Error(stderr || `${command} exited with an error`)
+        error.code = code
+        return Promise.reject(error)
       } else {
         return Promise.resolve(out || true)
       }
@@ -528,13 +507,9 @@ const executeLocally = (command: string) => (opts: EvaluatorArgs) =>
           if (execOptions.failWithUsage) {
             reject(new Error(undefined))
           } else {
-            const usage = await prepareUsage(command)
-            if (!usage) {
-              // error generating usage
-              reject(message)
-            } else {
-              reject(new UsageError({ message: err, code: codeForREPL, usage }))
-            }
+            const error: CodedError = new Error(message)
+            error.code = codeForREPL
+            reject(error)
           }
         }
 
@@ -595,14 +570,7 @@ const executeLocally = (command: string) => (opts: EvaluatorArgs) =>
         //
         debug('formatting structured output', output)
 
-        const result =
-          output === 'json'
-            ? JSON.parse(out)
-            : verb === 'logs'
-            ? formatLogs(out, execOptions)
-            : output === 'yaml'
-            ? redactYAML(out)
-            : redactJSON(out)
+        const result = output === 'json' ? JSON.parse(out) : verb === 'logs' ? formatLogs(out, execOptions) : out
 
         // debug('structured output', result)
 
@@ -615,8 +583,9 @@ const executeLocally = (command: string) => (opts: EvaluatorArgs) =>
           {
             mode: 'result',
             direct: rawCommand,
-            label:
-              verb === 'describe' ? 'describe' : output === 'json' || output === 'yaml' ? output.toUpperCase() : output,
+            label: strings(
+              verb === 'describe' ? 'describe' : output === 'json' || output === 'yaml' ? output.toUpperCase() : output
+            ),
             defaultMode: true
           }
         ]
@@ -703,7 +672,7 @@ const executeLocally = (command: string) => (opts: EvaluatorArgs) =>
           subtext,
           toolbarText: {
             type: 'info',
-            text: 'You are in read-only view mode'
+            text: strings('readonly')
           },
           noCost: true, // don't display the cost in the UI
           modes,
@@ -721,7 +690,9 @@ const executeLocally = (command: string) => (opts: EvaluatorArgs) =>
         const namespace = options.namespace || options.n || 'default'
         debug('status after kubectl run', entity, namespace)
         repl
-          .qexec(`k status deploy "${entity}" -n "${namespace}"`)
+          .qexec(
+            `k status deploy "${entity}" -n "${namespace}" --final-state ${FinalState.OnlineLike.toString()} --watch`
+          )
           .then(cleanupAndResolve)
           .catch(reject)
       } else if ((hasFileArg || (isKube && entity)) && (verb === 'create' || verb === 'apply' || verb === 'delete')) {
@@ -797,20 +768,34 @@ function helm(opts: EvaluatorArgs) {
   }
 }
 
-const shouldSendToPTY = (argv: string[]): boolean => (argv.length > 1 && argv[1] === 'exec') || argv.includes('|')
+const shouldSendToPTY = (opts: EvaluatorArgs): boolean =>
+  (opts.argvNoOptions.length > 1 && (opts.argvNoOptions[1] === 'exec' || opts.argvNoOptions[1] === 'edit')) ||
+  (opts.argvNoOptions[1] === 'logs' &&
+    (opts.parsedOptions.f !== undefined || (opts.parsedOptions.follow && opts.parsedOptions.follow !== 'false'))) ||
+  opts.argvNoOptions.includes('|')
 
-function kubectl(opts: EvaluatorArgs) {
-  if (!isHeadless() && shouldSendToPTY(opts.argvNoOptions)) {
+async function kubectl(opts: EvaluatorArgs) {
+  const semi = await repl.semicolonInvoke(opts)
+  if (semi) {
+    return semi
+  }
+
+  if (!isHeadless() && shouldSendToPTY(opts)) {
     // execOptions.exec = 'qexec'
     debug('redirect exec command to PTY')
     const commandToPTY = opts.command.replace(/^k(\s)/, 'kubectl$1')
-    return repl.qexec(`sendtopty ${commandToPTY}`, opts.block, undefined, opts.execOptions)
-  } else if (!inBrowser()) {
+    return repl.qexec(
+      `sendtopty ${commandToPTY}`,
+      opts.block,
+      undefined,
+      Object.assign({}, opts.execOptions, { rawResponse: true })
+    )
+  } else if (!inBrowser() || opts.argvNoOptions[1] === 'summary') {
     debug('invoking _kubectl directly')
     return _kubectl(opts)
   } else {
     debug('invoking _kubectl via qexec')
-    const command = opts.command.replace(/^kubectl(\s)/, '_kubectl$1').replace(/^k(\s)/, '_kubectl$1')
+    const command = opts.command.replace(/^kubectl(\s)?/, '_kubectl$1').replace(/^k(\s)?/, '_kubectl$1')
     return repl.qexec(command, opts.block, undefined, {
       tab: opts.tab,
       raw: opts.execOptions.raw,
@@ -880,7 +865,7 @@ export default async (commandTree: CommandRegistrar) => {
       const tableModel = table(out, '', command, verb, command === 'helm' ? '' : entityType, undefined, {}, execOptions)
       return tableModel
     },
-    { noAuthOk: true }
+    { noAuthOk: true, inBrowserOk: true }
   )
 
   //

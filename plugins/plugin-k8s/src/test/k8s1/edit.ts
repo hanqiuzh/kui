@@ -15,41 +15,25 @@
  */
 
 import * as common from '@kui-shell/core/tests/lib/common'
-import { cli, keys, selectors, sidecar, sleep } from '@kui-shell/core/tests/lib/ui'
+import { cli, keys, selectors, getTextContent } from '@kui-shell/core/tests/lib/ui'
 import {
   waitForGreen,
   waitForRed,
-  defaultModeForGet,
   createNS,
   allocateNS,
   deleteNS,
+  typeSlowly,
   waitTillNone
 } from '@kui-shell/plugin-k8s/tests/lib/k8s/utils'
 
 const kubectl = 'kubectl'
 
-common.localDescribe('electron kubectl edit', function(this: common.ISuite) {
+describe(`kubectl edit ${process.env.MOCHA_RUN_TARGET || ''}`, function(this: common.ISuite) {
   before(common.before(this))
   after(common.after(this))
 
   const ns: string = createNS()
   const inNamespace = `-n ${ns}`
-
-  /** delete the given pod */
-  const deleteIt = (name: string, errOk = false) => {
-    it(`should delete the pod ${name} via ${kubectl}`, () => {
-      return cli
-        .do(`${kubectl} delete pod ${name} ${inNamespace}`, this.app)
-        .then(cli.expectOKWithCustom({ selector: selectors.BY_NAME(name) }))
-        .then(selector => waitForRed(this.app, selector))
-        .then(() => waitTillNone('pod', undefined, name, undefined, inNamespace))
-        .catch(err => {
-          if (!errOk) {
-            return common.oops(this)(err)
-          }
-        })
-    })
-  }
 
   const createIt = (name: string) => {
     it(`should create sample pod ${name} from URL via ${kubectl}`, async () => {
@@ -63,43 +47,51 @@ common.localDescribe('electron kubectl edit', function(this: common.ISuite) {
 
         // wait for the badge to become green
         await waitForGreen(this.app, selector)
-
-        // now click on the table row
-        this.app.client.click(`${selector} .clickable`)
-        await sidecar
-          .expectOpen(this.app)
-          .then(sidecar.expectMode(defaultModeForGet))
-          .then(sidecar.expectShowing(name))
       } catch (err) {
-        common.oops(this)(err)
+        await common.oops(this, true)(err)
       }
     })
   }
 
-  const editItWithoutSaving = (name: string, N: number, quit: string) => {
-    it(`should edit it via ${kubectl} edit`, async () => {
-      const res = cli.do(`${kubectl} edit pod ${name} ${inNamespace}`, this.app)
+  const editIt = (name: string, quit: string) => {
+    it(`should edit it via ${kubectl} edit, and using ${quit} to quit`, async () => {
+      try {
+        const res = await cli.do(`${kubectl} edit pod ${name} ${inNamespace}`, this.app)
 
-      const rows = selectors.xtermRows(N)
+        const rows = selectors.xtermRows(res.count)
 
-      // wait for vi to come up
-      await this.app.client.waitForExist(rows)
+        // wait for vi to come up
+        await this.app.client.waitForExist(rows)
 
-      // hmm.. for some reason we can't type 'wq!' right away
-      await sleep(1000)
+        // wait for vi to come up in alt buffer mode
+        await this.app.client.waitForExist(`tab.visible.xterm-alt-buffer-mode`)
 
-      // quit without saving
-      await this.app.client.keys(quit)
-      await this.app.client.keys(keys.ENTER)
+        // wait for apiVersion: v<something> to show up in the pty
+        await this.app.client.waitUntil(async () => {
+          try {
+            const txt = await getTextContent(this.app, rows)
+            return /apiVersion: v/.test(txt)
+          } catch (err) {
+            console.error(err)
+            return false
+          }
+        })
 
-      await this.app.client.waitUntil(() => {
-        // first false: not exact
-        // second false: don't assert, so that we can waitUntil
-        return res
-          .then(cli.expectOKWithTextContent('cancelled', false, false))
-          .then(() => true)
-          .catch(() => false)
-      })
+        await this.app.client.waitUntil(async () => {
+          // quit without saving
+          await this.app.client.keys(keys.ESCAPE)
+          await typeSlowly(this.app, `${quit}${keys.ENTER}`)
+
+          // first false: not exact
+          // second false: don't assert, so that we can waitUntil
+          return Promise.resolve(res)
+            .then(cli.expectOKWithTextContent('cancelled', false, false))
+            .then(() => true)
+            .catch(() => false)
+        })
+      } catch (err) {
+        await common.oops(this, true)(err)
+      }
     })
   }
 
@@ -110,9 +102,8 @@ common.localDescribe('electron kubectl edit', function(this: common.ISuite) {
 
   const nginx = 'nginx'
   createIt(nginx)
-  editItWithoutSaving(nginx, 3, ':wq!')
-  editItWithoutSaving(nginx, 4, ':wq')
-  deleteIt(nginx)
+  editIt(nginx, ':wq!')
+  editIt(nginx, ':wq')
 
   deleteNS(this, ns)
 })

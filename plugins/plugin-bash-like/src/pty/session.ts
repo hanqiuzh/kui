@@ -19,11 +19,22 @@ import * as Debug from 'debug'
 import { Channel } from './channel'
 import { inBrowser } from '@kui-shell/core/core/capabilities'
 import { CommandRegistrar } from '@kui-shell/core/models/command'
-import { getCurrentPrompt, getCurrentBlock, setStatus, Tab } from '@kui-shell/core/webapp/cli'
+import {
+  getCurrentPrompt,
+  getPrompt,
+  getCurrentBlock,
+  getCurrentProcessingBlock,
+  setStatus,
+  Tab
+} from '@kui-shell/core/webapp/cli'
 import { pexec, qexec } from '@kui-shell/core/core/repl'
 import { theme as settings, config } from '@kui-shell/core/core/settings'
+import { CodedError } from '@kui-shell/core/models/errors'
 
 import { setOnline, setOffline } from './ui'
+
+import i18n from '@kui-shell/core/util/i18n'
+const strings = i18n('plugin-bash-like')
 
 const debug = Debug('plugins/bash-like/pty/session')
 
@@ -40,9 +51,25 @@ export function getChannelForTab(tab: Tab): Channel {
  *
  */
 export function pollUntilOnline(tab: Tab, block?: HTMLElement) {
-  return new Promise(resolve => {
-    const once = () => {
+  const sessionInitialization = new Promise(resolve => {
+    let placeholderChanged = false
+    let previousText: string
+
+    const once = (iter = 0) => {
       debug('trying to establish session', tab)
+
+      if (!block) {
+        block = getCurrentBlock(tab) || getCurrentProcessingBlock(tab)
+        const prompt = getPrompt(block)
+        prompt.readOnly = true
+        prompt.placeholder = strings('Please wait while we connect to your cloud')
+
+        placeholderChanged = true
+        previousText = prompt.value
+        prompt.value = '' // to make the placeholder visible
+
+        setStatus(block, 'processing')
+      }
 
       return qexec('echo initializing session', block, undefined, {
         tab,
@@ -55,21 +82,41 @@ export function pollUntilOnline(tab: Tab, block?: HTMLElement) {
         .then(() => {
           try {
             setOnline()
+
+            if (placeholderChanged) {
+              const prompt = getPrompt(block)
+              prompt.readOnly = false
+              prompt.placeholder = settings.placeholder || ''
+              setStatus(block, 'repl-active')
+
+              if (previousText) {
+                prompt.value = previousText
+                previousText = undefined
+              }
+              prompt.focus()
+            }
           } catch (err) {
             console.error('error updating UI to indicate that we are online', err)
           }
-          resolve()
+          resolve(getChannelForTab(tab))
         })
-        .catch(err => {
-          console.error('error establishing session', err)
+        .catch(error => {
+          const err = error as CodedError
+          if (err.code !== 503) {
+            // don't bother complaining too much about connection refused
+            console.error('error establishing session', err.code, err.statusCode, err)
+          }
           setOffline()
-          setTimeout(once, 2000)
-          return 'Could not establish a new session'
+          setTimeout(() => once(iter + 1), iter < 10 ? 2000 : iter < 100 ? 4000 : 10000)
+          return strings('Could not establish a new session')
         })
     }
 
     once()
   })
+
+  tab['_kui_session'] = sessionInitialization
+  return sessionInitialization
 }
 
 /**
@@ -90,10 +137,10 @@ function newSessionForTab(tab: Tab) {
 
       // change the placeholder if sessionInitialization is slow
       const placeholderAsync = setTimeout(() => {
-        prompt.placeholder = 'Please wait while we connect to your cloud'
+        prompt.placeholder = strings('Please wait while we connect to your cloud')
         setStatus(block, 'processing')
         placeholderChanged = true
-      }, settings.millisBeforeProxyConnectionWarning || 750)
+      }, settings.millisBeforeProxyConnectionWarning || 250)
 
       await sessionInitialization
 
@@ -120,7 +167,7 @@ export function registerCommands(commandTree: CommandRegistrar) {
     () => {
       const message = document.createElement('pre')
       message.appendChild(
-        document.createTextNode('Successfully connected to your cloud. For next steps, try this command: ')
+        document.createTextNode(strings('Successfully connected to your cloud. For next steps, try this command: '))
       )
 
       const clicky = document.createElement('span')
@@ -148,6 +195,16 @@ export async function init() {
     // listen for new tabs
     eventBus.on('/tab/new', (tab: Tab) => {
       newSessionForTab(tab)
+    })
+
+    // listen for closed tabs
+    eventBus.on('/tab/close', async (tab: Tab) => {
+      try {
+        debug('closing session for tab')
+        getChannelForTab(tab).close()
+      } catch (err) {
+        console.error('error terminating session for closed tab', err)
+      }
     })
   }
 }

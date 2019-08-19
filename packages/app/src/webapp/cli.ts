@@ -230,6 +230,21 @@ export const getCurrentPromptLeft = (tab: Tab) => {
   return getPromptLeft(getCurrentBlock(tab))
 }
 
+/**
+ * Install a sub-block of output in the given block
+ *
+ */
+export function subblock() {
+  const block = document.createElement('div')
+  const blockResult = document.createElement('div')
+
+  blockResult.classList.add('repl-result')
+  block.classList.add('kui--repl-subblock')
+  block.appendChild(blockResult)
+
+  return block
+}
+
 const doPaste = (text: string) => {
   // const prompt = event.currentTarget
   const lines = text.split(/[\n\r]/)
@@ -847,6 +862,34 @@ export const popupListen = (
   listen(input)
 }
 
+export async function renderResult(
+  response: Entity,
+  tab: Tab,
+  execOptions: ExecOptions,
+  parsedOptions: ParsedOptions,
+  resultDom,
+  echo = true,
+  attach = echo
+) {
+  if (isTable(response)) {
+    await printTable(tab, response, resultDom, execOptions, parsedOptions)
+    return true
+  } else if (isHTML(response)) {
+    // TODO is this the best way to detect response is a dom??
+    // pre-formatted DOM element
+    if (attach) {
+      resultDom.appendChild(response)
+    }
+    if (echo) {
+      ;(resultDom.parentNode as HTMLElement).classList.add('result-vertical')
+      ok(resultDom.parentElement).classList.add('ok-for-list')
+    }
+    return true
+  } else {
+    return false
+  }
+}
+
 /**
  * Render the results of a command evaluation in the "console"
  *
@@ -914,21 +957,12 @@ export const printResults = (
   }
 
   if (echo) {
-    setStatus(block, 'valid-response')
+    setStatus(block, response === false ? 'error' : 'valid-response')
   }
 
   const render = async (response: Entity, { echo, resultDom }: { echo: boolean; resultDom: HTMLElement }) => {
     if (response && response !== true) {
-      if (isTable(response)) {
-        await printTable(tab, response, resultDom, execOptions, parsedOptions)
-      } else if (isHTML(response)) {
-        // TODO is this the best way to detect response is a dom??
-        // pre-formatted DOM element
-        if (echo) {
-          resultDom.appendChild(response)
-          ;(resultDom.parentNode as HTMLElement).classList.add('result-vertical')
-          ok(resultDom.parentElement).classList.add('ok-for-list')
-        }
+      if (await renderResult(response, tab, execOptions, parsedOptions, resultDom, echo)) {
       } else if (
         isEntitySpec(response) &&
         response.verb === 'list' &&
@@ -1149,7 +1183,7 @@ export const installBlock = (parentNode: Node, currentBlock: HTMLElement, nextBl
 
   scrollIntoView({ when: 100 })
 
-  eventBus.emit('/core/cli/install-block')
+  eventBus.emit('/core/cli/install-block', getTabFromTarget(currentBlock))
 
   await handleQueuedInput(nextBlock)
 }

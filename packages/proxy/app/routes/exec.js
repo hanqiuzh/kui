@@ -31,26 +31,46 @@ const mainPath = require.resolve('../../kui/node_modules/@kui-shell/core')
 const { main: wssMain } = require('../../kui/node_modules/@kui-shell/plugin-bash-like/pty/server')
 const { StdioChannelWebsocketSide } = require('../../kui/node_modules/@kui-shell/plugin-bash-like/pty/stdio-channel')
 
+process.on('uncaughtException', async err => {
+  debug('uncaughtException')
+  debug(err)
+  console.error(err.toString())
+  process.exit(1)
+})
+
+process.on('exit', code => {
+  debug('proxy exiting', code)
+})
+
 async function allocateUser() {
+  debug('allocateUser')
   const uid = undefined
   const gid = undefined
 
-  return { uid, gid }
+  // inherit HOME if we haven't otherwise decided to use a specific
+  // uid/gid for this tenant
+  const HOME = uid === undefined && process.env.HOME
+
+  return { uid, gid, HOME }
 }
 
 /** thin wrapper on child_process.exec */
-function main(cmdline, execOptions, server, port, host, existingSession) {
+function main(cmdline, execOptions, server, port, host, existingSession, locale) {
   // eslint-disable-next-line no-async-promise-executor
   return new Promise(async (resolve, reject) => {
-    const { uid, gid } = existingSession || (await allocateUser())
+    const { uid, gid, HOME } = existingSession || (await allocateUser())
 
     const options = {
       uid,
       gid,
       cwd: execOptions.cwd || '/',
       env: Object.assign(execOptions.env || {}, {
+        TRAVIS_HOME: process.env.TRAVIS_HOME,
+        HOME,
+        LOCALE: locale,
         DEBUG: process.env.DEBUG,
         DEVMODE: true,
+        TRAVIS_JOB_ID: process.env.TRAVIS_JOB_ID,
         KUI_HEADLESS: true,
         KUI_REPL_MODE: 'stdout',
         KUI_EXEC_OPTIONS: JSON.stringify(execOptions)
@@ -72,9 +92,11 @@ function main(cmdline, execOptions, server, port, host, existingSession) {
 
       const { wss } = await wssMain(N, server, port, cookie)
 
+      debug('spawning subprocess')
       const child = spawn(process.argv[0], [mainPath, 'bash', 'websocket', 'stdio'], options)
 
       child.on('error', err => {
+        console.error('error spawning subprocess', err)
         reject(err)
       })
 
@@ -151,6 +173,9 @@ module.exports = (server, port) => {
         // so that our catch (err) below is used upon command execution failure
         execOptions.rethrowErrors = true
 
+        // parse the user's locale
+        const locale = req.headers['accept-language'] && req.headers['accept-language'].split(',')[0]
+
         /* if (execOptions && execOptions.credentials) {
           // FIXME this should not be a global
           setValidCredentials(execOptions.credentials)
@@ -163,7 +188,15 @@ module.exports = (server, port) => {
           }) */
         const sessionToken = parseCookie(req.headers.cookie || '')[sessionKey]
         const session = sessionToken && JSON.parse(Buffer.from(sessionToken, 'base64').toString('utf-8'))
-        const { type, cookie, response } = await main(command, execOptions, server, port, req.headers.host, session)
+        const { type, cookie, response } = await main(
+          command,
+          execOptions,
+          server,
+          port,
+          req.headers.host,
+          session,
+          locale
+        )
 
         if (cookie) {
           res.header('Access-Control-Allow-Credentials', 'true')
@@ -177,7 +210,7 @@ module.exports = (server, port) => {
         const code = response.code || response.statusCode || 200
         res.status(code).json({ type, response })
       } catch (err) {
-        debug('exception in command execution', err.code, err.message, err)
+        console.error('exception in command execution', err.code, err.message, err)
         const possibleCode = err.code || err.statusCode
         const code = possibleCode && typeof possibleCode === 'number' ? possibleCode : 500
         res.status(code).send(err.message || err)

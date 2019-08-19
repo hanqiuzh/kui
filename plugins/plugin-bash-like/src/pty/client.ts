@@ -44,8 +44,9 @@ import { inBrowser } from '@kui-shell/core/core/capabilities'
 import { formatUsage } from '@kui-shell/core/webapp/util/ascii-to-usage'
 import { preprocessTable, formatTable } from '@kui-shell/core/webapp/util/ascii-to-table'
 import { Table } from '@kui-shell/core/webapp/models/table'
-import { ParsedOptions } from '@kui-shell/core/models/command'
+import { ExecType, ParsedOptions } from '@kui-shell/core/models/command'
 import { ExecOptions } from '@kui-shell/core/models/execOptions'
+import { CodedError } from '@kui-shell/core/models/errors'
 
 import * as ui from './ui'
 import * as session from './session'
@@ -116,7 +117,10 @@ interface HTerminal extends xterm.Terminal {
 
 class Resizer {
   /** our tab */
-  private tab: Tab
+  private readonly tab: Tab
+
+  /** execOptions */
+  private readonly execOptions: ExecOptions
 
   /** exit alt buffer mode async */
   private exitAlt?: NodeJS.Timeout
@@ -139,8 +143,9 @@ class Resizer {
 
   private readonly resizeNow: () => void
 
-  constructor(terminal: xterm.Terminal, tab: Tab) {
+  constructor(terminal: xterm.Terminal, tab: Tab, execOptions: ExecOptions) {
     this.tab = tab
+    this.execOptions = execOptions
     this.terminal = terminal as HTerminal
 
     this.resizeNow = this.resize.bind(this, true)
@@ -321,13 +326,13 @@ class Resizer {
   }
 
   /** flush=true means that it is likely that the dimensions might have changed; false means definitely have not changed */
-  resize(flush = false) {
+  resize(flush = false, force = false) {
     if (this.frozen) {
       return
     }
 
     const { rows, cols } = this.getSize(flush)
-    if (this.terminal.rows !== rows || this.terminal.cols !== cols) {
+    if (this.terminal.rows !== rows || this.terminal.cols !== cols || force) {
       debug('resize', cols, rows, this.terminal.cols, this.terminal.rows, this.inAltBufferMode())
       try {
         if (!isNaN(rows) && !isNaN(cols)) {
@@ -374,7 +379,20 @@ class Resizer {
     if (this.exitAlt) {
       clearTimeout(this.exitAlt)
     }
-    this.tab.classList.add('xterm-alt-buffer-mode')
+
+    /** e.g. `kubectl exec -it mypod -- vi` doesn't seem to have the proper size */
+    if (this.execOptions['pty/force-resize']) {
+      const { rows, cols } = this.getSize(false)
+      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+        this.ws.send(JSON.stringify({ type: 'resize', cols, rows: rows + 1 }))
+        setTimeout(() => {
+          this.ws.send(JSON.stringify({ type: 'resize', cols, rows: rows }))
+          this.tab.classList.add('xterm-alt-buffer-mode')
+        }, 1)
+      }
+    } else {
+      this.tab.classList.add('xterm-alt-buffer-mode')
+    }
   }
 
   exitAltBufferMode() {
@@ -441,7 +459,11 @@ const remoteChannelFactory: ChannelFactory = async () => {
     const WebSocketChannel = (await import('./websocket-channel')).default
     return new WebSocketChannel(url, uid, gid)
   } catch (err) {
-    console.error('error opening websocket', err)
+    const error = err as CodedError
+    if (error.statusCode !== 503) {
+      // don't bother complaining too much about connection refused
+      console.error('error opening websocket', err)
+    }
     throw err
   }
 }
@@ -484,7 +506,7 @@ const getOrCreateChannel = async (
       rows: terminal.rows,
       cols: terminal.cols,
       cwd: process.env.PWD || (!inBrowser() && process.cwd()), // inBrowser: see https://github.com/IBM/kui/issues/1966
-      env: !inBrowser() && process.env // don't send an empty process.env from the browser!
+      env: Object.keys(process.env).length > 0 && process.env // VERY IMPORTANT: don't send an empty process.env
     }
     debug('exec after open', msg)
 
@@ -507,8 +529,11 @@ const getOrCreateChannel = async (
     // when the websocket has closed, notify the user
     ws.on('close', () => {
       debug('channel has closed')
-      ui.setOffline()
-      session.pollUntilOnline(tab)
+      if (!tab['state'].closed) {
+        debug('attempting to reestablish connection, because the tab is still open ')
+        ui.setOffline()
+        session.pollUntilOnline(tab)
+      }
     })
 
     return ws
@@ -553,7 +578,7 @@ export const doExec = (
       parsedOptions.output ||
       parsedOptions.out ||
       (argvNoOptions[0] === 'cat' && /json$/.test(argvNoOptions[1]) && 'json') ||
-      (argvNoOptions[0] === 'cat' && /yaml$/.test(argvNoOptions[1]) && 'yaml')
+      (argvNoOptions[0] === 'cat' && (/yaml$/.test(argvNoOptions[1]) || /yml$/.test(argvNoOptions[1])) && 'yaml')
     const expectingSemiStructuredOutput = /yaml|json/.test(contentType)
 
     const injectingCSS = !alreadyInjectedCSS
@@ -624,7 +649,7 @@ export const doExec = (
         const doInjectTheme = () => injectFont(terminal, true)
         eventBus.on('/theme/change', doInjectTheme) // and re-inject when the theme changes
 
-        const resizer = new Resizer(terminal, tab)
+        const resizer = new Resizer(terminal, tab, execOptions)
 
         // respond to font zooming
         const doZoom = () => {
@@ -653,12 +678,20 @@ export const doExec = (
           resizer.hideCursorOnlyRow()
 
           resizer.destroy()
-          xtermContainer.classList.add('xterm-terminated')
+
+          if (execOptions.type === ExecType.Nested && execOptions.quiet !== false) {
+            xtermContainer.remove()
+          } else {
+            xtermContainer.classList.add('xterm-terminated')
+          }
         }
 
         const ourUUID = uuid()
-        const ws: Channel = await getOrCreateChannel(cmdline, ourUUID, tab, terminal).catch((err: Error) => {
-          console.error('error creating channel', err)
+        const ws: Channel = await getOrCreateChannel(cmdline, ourUUID, tab, terminal).catch((err: CodedError) => {
+          if (err.code !== 503) {
+            // don't bother complaining too much about connection refused
+            console.error('error creating channel', err)
+          }
           cleanUpTerminal()
           throw err
         })
@@ -680,13 +713,29 @@ export const doExec = (
          }) */
 
         // relay keyboard input to the server
-        let queuedInput: string
+        let queuedInput = ''
+        let flushAsync: NodeJS.Timeout
         terminal.on('key', (key: string) => {
           if (ws.readyState === WebSocket.CLOSING || ws.readyState === WebSocket.CLOSED) {
             debug('queued input out back', key)
             queuedInput += key
           } else {
-            ws.send(JSON.stringify({ type: 'data', data: key, uid: ourUUID }))
+            // even with the xterm active, buffer input and flush in
+            // chunks to increase responsiveness for fast typing, and
+            // to reduce load in the proxy server (compared to sending
+            // one message per keypress)
+            queuedInput += key
+
+            if (flushAsync) {
+              clearTimeout(flushAsync)
+            }
+            flushAsync = setTimeout(() => {
+              if (queuedInput && ws.readyState === WebSocket.OPEN) {
+                const data = queuedInput
+                queuedInput = ''
+                ws.send(JSON.stringify({ type: 'data', data, uid: ourUUID }))
+              }
+            }, 20)
           }
         })
 
@@ -759,11 +808,36 @@ export const doExec = (
         terminal.element.classList.add('fullscreen')
 
         let pendingUsage = false
-        let definitelyNotUsage = argvNoOptions[0] === 'git' // short-term hack u ntil we fix up ascii-to-usage
+        let definitelyNotUsage = argvNoOptions[0] === 'git' || execOptions.rawResponse // short-term hack u ntil we fix up ascii-to-usage
         let pendingTable: Table
         let raw = ''
 
-        let definitelyNotTable = expectingSemiStructuredOutput || argvNoOptions[0] === 'grep' // short-term hack until we fix up ascii-to-table
+        let definitelyNotTable = expectingSemiStructuredOutput || argvNoOptions[0] === 'grep' || execOptions.rawResponse // short-term hack until we fix up ascii-to-table
+
+        let alreadyFocused = false
+        const focus = () => {
+          if (!alreadyFocused) {
+            setTimeout(() => {
+              // expensive reflow, async it
+              if (!alreadyFocused) {
+                alreadyFocused = true
+                terminal.focus()
+              }
+            }, 0)
+          }
+        }
+
+        const onFirstMessage = () => {
+          const queuedInput = disableInputQueueing()
+          if (queuedInput.length > 0) {
+            debug('queued input up front', queuedInput)
+            setTimeout(() => ws.send(JSON.stringify({ type: 'data', data: queuedInput })), 50)
+          }
+
+          // now that we've grabbed queued input, focus on the terminal,
+          // and it will handle input for now until the process exits
+          focus()
+        }
 
         const onMessage = async (data: string) => {
           const msg = JSON.parse(data)
@@ -773,21 +847,28 @@ export const doExec = (
           }
 
           if (msg.type === 'state' && msg.state === 'ready') {
-            const queuedInput = disableInputQueueing()
-            if (queuedInput.length > 0) {
-              debug('queued input up front', queuedInput)
-              setTimeout(() => ws.send(JSON.stringify({ type: 'data', data: queuedInput })), 50)
-            }
-
-            // now that we've grabbed queued input, focus on the terminal,
-            // and it will handle input for now until the process exits
-            setTimeout(() => terminal.focus(), 0) // expensive reflow, async it
+            onFirstMessage()
           } else if (msg.type === 'data') {
             // plain old data flowing out of the PTY; send it on to the xterm UI
 
+            if (!alreadyFocused) {
+              onFirstMessage()
+            }
+
+            const flush = () => {
+              if (pendingTable) {
+                pendingTable = undefined
+                definitelyNotTable = true
+                definitelyNotUsage = true
+                terminal.write(raw)
+              }
+            }
+
             if (enterApplicationModePattern.test(msg.data)) {
               // e.g. less start
+              flush()
               resizer.enterApplicationMode()
+              focus()
             } else if (exitApplicationModePattern.test(msg.data)) {
               // e.g. less exit
               resizer.exitApplicationMode()
@@ -796,6 +877,8 @@ export const doExec = (
               // we need to fast-track this; xterm.js does not invoke the
               // setMode/resetMode handlers till too late; we might've
               // called raw += ... even though we are in alt buffer mode
+              flush()
+              focus()
               resizer.enterAltBufferMode()
             } else if (exitAltBufferPattern.test(msg.data)) {
               // ... same here
@@ -820,7 +903,8 @@ export const doExec = (
                   const tableRows = tables.filter(_ => _.rows !== undefined).flatMap(_ => _.rows)
 
                   if (tableRows && tableRows.length > 0) {
-                    debug('tableRows', tableRows)
+                    debug(`table came from ${stripClean(raw)}`)
+                    debug(`tableRows ${tableRows.length}`)
                     const command = argvNoOptions[0]
                     const verb = argvNoOptions[1]
                     const entityType = /\w+/.test(argvNoOptions[2]) && argvNoOptions[2]
@@ -831,6 +915,7 @@ export const doExec = (
                     definitelyNotTable = true
                   }
                 } else {
+                  debug('definitelyNotTable')
                   definitelyNotTable = true
                 }
               } catch (err) {
@@ -849,15 +934,19 @@ export const doExec = (
                 definitelyNotUsage = true
               }
 
-              pendingWrites++
-              terminal.write(msg.data)
+              if (execOptions.type !== ExecType.Nested || execOptions.quiet === false) {
+                pendingWrites++
+                terminal.write(msg.data)
+              }
             }
           } else if (msg.type === 'exit') {
             // server told us that it is done
             debug('exit', msg.exitCode)
 
             if (pendingTable && pendingTable.body.length === 0) {
-              terminal.write(raw)
+              if (execOptions.type !== ExecType.Nested || execOptions.quiet === false) {
+                terminal.write(raw)
+              }
               pendingTable = undefined
             }
 
@@ -953,14 +1042,22 @@ export const doExec = (
         }
 
         ws.on('message', onMessage)
-      } catch (err) {
-        console.error('error in pty/client', err)
-        if (err['code'] === 127 || err['code'] === 404) {
-          err['code'] = 127
+      } catch (error) {
+        const err = error as CodedError
+        if (err.code === 127 || err.code === 404) {
+          err.code = 127
           reject(err)
         } else {
-          debug('error in client', err)
-          reject(new Error('Internal Error'))
+          if (err.code !== 503) {
+            // don't bother complaining too much about connection refused
+            debug('error in pty/client', err)
+          }
+
+          if (!err.message) {
+            err.message = 'Internal Error'
+          }
+
+          reject(err)
         }
       }
     }

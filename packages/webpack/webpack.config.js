@@ -28,6 +28,20 @@ console.log('explicit compression option?', webCompress || '<not set>')
 console.log('bundle compression disabled?', noCompression)
 console.log('bundle compression useGzip?', useGzip)
 
+// darwin/macos seems to have high cpu utilization without poll
+const pollInterval = process.platform === 'darwin' && (process.env.WEBPACK_POLL_INTERVAL || 2000)
+console.log('webpack poll interval', pollInterval)
+
+const contentSecurityPolicyForDevServer =
+  process.env.WEBPACK_DEV_SERVER &&
+  `default-src 'none'; style-src 'self' 'unsafe-inline'; img-src 'self' file: 'nonce-kuiDefaultNonce' data:; script-src 'self' 'nonce-kuiDefaultNonce' 'strict-dynamic' 'unsafe-eval'; font-src 'self' file:; connect-src 'self' ${process
+    .env.CSP_ALLOWED_HOSTS || 'http://localhost:8081 http://localhost:9953 ws://localhost:8081 ws://localhost:9080'}`
+if (contentSecurityPolicyForDevServer) {
+  console.log('ContentSecurityPolicy: dev-server', contentSecurityPolicyForDevServer)
+} else {
+  console.log('ContentSecurityPolicy: from-client')
+}
+
 const isMonorepo = process.env.KUI_MONO_HOME !== undefined
 if (isMonorepo) {
   console.log('monorepo mode', process.env.KUI_MONO_HOME)
@@ -113,6 +127,15 @@ plugins.push({
           env: { main, hash, resourceRoot: '.' }
         }
 
+        if (contentSecurityPolicyForDevServer) {
+          overrides.theme = {
+            // only override the CSP when running webpack-dev-server;
+            // otherwise, we will inherit the settings from theme.json
+            // https://github.com/IBM/kui/pull/2395
+            contentSecurityPolicy: contentSecurityPolicyForDevServer
+          }
+        }
+
         if (isWatching) {
           overrides.build.buildDir = buildDir
         }
@@ -169,11 +192,11 @@ module.exports = {
     'electron'
   ],
   devServer: {
-    headers: { 'Access-Control-Allow-Origin': '*' },
+    headers: {},
     compress: true,
     clientLogLevel: 'silent',
     watchOptions: {
-      poll: 1000,
+      poll: pollInterval,
       ignored: ['**/*.d.ts', 'node_modules', '**/packages/**/src/*', '**/plugins/**/src/*', '**/clients/default/**']
     },
     contentBase: buildDir,

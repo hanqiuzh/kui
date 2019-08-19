@@ -24,7 +24,9 @@ interface ISuite extends Suite {
 interface IBeforeOptions {
   noApp?: boolean
   popup?: string[]
+  noProxySessionWait?: boolean
   afterStart?: () => Promise<void>
+  beforeStart?: () => Promise<void>
 }
 
 declare function before (ctx: Suite, options?: IBeforeOptions): HookFunction
@@ -42,9 +44,21 @@ declare function dockerDescribe (msg: string, f: Function): SuiteFunction
 /** only execute the test in non-proxy browser */
 declare function remoteIt (msg: string, f: Function): TestFunction
 
+/** only execute the test in proxy+browser client */
+declare function proxyIt (msg: string, f: Function): TestFunction
+
+/** only execute the test in electron or proxy+browser client */
+declare function pit (msg: string, f: Function): TestFunction
+
 // never versus void? https://github.com/Microsoft/TypeScript/issues/13625#issuecomment-274566197
-declare function oops (ctx: Suite): ((err: Error) => never)
+declare function oops (ctx: Suite, wait?: boolean): ((err: Error) => never)
 
 declare function rp (opts: Object): any
 
+/** reload the app */
+declare function refresh (ctx: Suite, wait?: boolean): Promise<void>
+
+/** restart the app */
+declare function restart (ctx: Suite): Promise<void>
+  
 declare var expectedVersion: string

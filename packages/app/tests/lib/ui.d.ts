@@ -41,6 +41,7 @@ declare function expectYAML (struct1: object, subset?: boolean, failFast?: boole
 declare function expectYAMLSubset (struct1: object, failFast?: boolean): (str: string) => boolean
 declare function expectSubset (struct1: object, failFast?: boolean): (str: string) => boolean
 declare function expectValidActivationId (): (activationId: string) => boolean
+declare function expectText (app: Application, expectedText: string): (selector: string) => Promise<void>
 
 declare function expectedNamespace (space?: string, org?: string): string
 
@@ -107,7 +108,7 @@ interface ICustomSpec {
 
 declare class CLI {
   /** execute a command */
-  do: (cmd: string, app: Application, noNewline?: boolean) => Promise<AppAndCount>
+  do: (cmd: string, app: Application, noNewline?: boolean, noCopyPaste?: boolean) => Promise<AppAndCount>
 
   /**
    * Exit code code for the given http status code; this is an identity function; for headless mode, there is the -256 part.
@@ -171,6 +172,7 @@ declare class Selectors {
   SIDECAR_CUSTOM_CONTENT: string
   SIDECAR_MODE_BUTTONS: string
   SIDECAR_MODE_BUTTON: (mode: string) => string
+  SIDECAR_MODE_BUTTON_SELECTED: (mode: string) => string
   SIDECAR_BACK_BUTTON: string
   SIDECAR_MAXIMIZE_BUTTON: string
   SIDECAR_CLOSE_BUTTON: string
@@ -182,10 +184,14 @@ declare class Selectors {
   CURRENT_PROMPT: string
   PROMPT_N: (N: number) => string
   OUTPUT_N: (N: number) => string
+  PROMPT_BLOCK_LAST: string
+  PROMPT_BLOCK_FINAL: string
+  PROMPT_FINAL: string
   OUTPUT_LAST: string
   LIST_RESULTS_N: (N: number) => string
   LIST_RESULTS_BY_NAME_N: (N: number) => string
   LIST_RESULT_BY_N_FOR_NAME: (N: number, name: string) => string
+  TABLE_CELL: (rowKey: string, cellKey: string) => string
   BY_NAME: (name: string) => string
   LIST_RESULT_BY_N_AND_NAME: (N: number, name: string) => string
   OK_N: (N: number) => string

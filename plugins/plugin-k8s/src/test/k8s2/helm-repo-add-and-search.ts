@@ -19,8 +19,8 @@ import { cli } from '@kui-shell/core/tests/lib/ui'
 
 const synonyms = ['helm']
 
-// TODO: enable this test when ISSUE https://github.com/IBM/kui/issues/1947 is solved
-common.localDescribe(`helm repo ${process.env.MOCHA_RUN_TARGET}`, function(this: common.ISuite) {
+// TODO: enable this once proxy can find $HOME on travis
+describe(`helm repo ${process.env.MOCHA_RUN_TARGET}`, function(this: common.ISuite) {
   before(common.before(this))
   after(common.after(this))
 

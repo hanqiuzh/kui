@@ -173,12 +173,13 @@ class ProxyEvaluator implements ReplEval {
                       channel.removeEventListener('message', onMessage)
                       const code = response.response.code || response.response.statusCode
                       if (code !== undefined && code !== 200) {
-                        debug('rejecting', response)
                         if (UsageError.isUsageError(response.response)) {
                           // e.g. k get -h
+                          debug('rejecting as usage error', response)
                           reject(response.response)
                         } else {
                           // e.g. k get pod nonExistantName
+                          debug('rejecting as other error', response)
                           const err: CodedError = new Error(response.response.message)
                           err.stack = response.response.stack
                           err.code = err.statusCode = code
@@ -227,8 +228,17 @@ class ProxyEvaluator implements ReplEval {
             xhr.setRequestHeader('Content-Type', 'application/json')
             xhr.setRequestHeader('Accept', 'application/json')
             xhr.addEventListener('error', () => {
-              console.error('error in xhr', xhr)
-              resolve(xhr.response || 'Internal Error')
+              if (xhr.readyState === 4 && xhr.status === 0) {
+                // this means connection refused or other inability to connect to the proxy server
+                resolve({
+                  statusCode: 503,
+                  code: 503,
+                  body: 'Connection refused'
+                })
+              } else {
+                console.error('error in xhr', xhr.status, xhr)
+                resolve(xhr.response || 'Internal Error')
+              }
             })
             xhr.addEventListener('load', () => {
               resolve({
@@ -294,12 +304,12 @@ class ProxyEvaluator implements ReplEval {
             extra: err.body.extra
           })
         } else {
-          const error = new Error(
+          const error: CodedError = new Error(
             (err.body && err.body.message) ||
               (typeof err.body === 'string' ? err.body : err.message || 'Internal error')
           )
-          error['code'] = error['statusCode'] = (err.body && err.body.code) || err.code || err.statusCode
-          debug('using this code', error['code'])
+          error.code = error.statusCode = (err.body && err.body.code) || err.code || err.statusCode
+          debug('using this code', error.code)
           throw error
         }
       }

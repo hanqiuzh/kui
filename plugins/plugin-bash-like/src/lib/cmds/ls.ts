@@ -16,7 +16,7 @@
 
 import * as Debug from 'debug'
 
-import { lstat, readdir, stat } from 'fs'
+import { lstat, readdir, readFile, stat } from 'fs'
 import { dirname, isAbsolute, join } from 'path'
 
 import expandHomeDir from '@kui-shell/core/util/home'
@@ -27,6 +27,10 @@ import { findFile, findFileWithViewer, isSpecialDirectory } from '@kui-shell/cor
 
 import { doExec } from './bash-like'
 import { localFilepath } from '../util/usage-helpers'
+
+import i18n from '@kui-shell/core/util/i18n'
+const strings = i18n('plugin-bash-like')
+
 const debug = Debug('plugins/bash-like/cmds/ls')
 
 /** flatten an array of arrays */
@@ -108,22 +112,61 @@ const myreaddir = (dir: string): Promise<Record<string, boolean>> =>
  * If the given filepath is a directory, then ls it, otherwise cat it
  *
  */
-const lsOrOpen = (filepath: string) =>
-  new Promise((resolve, reject) => {
+const lsOrOpen = async ({ argvNoOptions }: EvaluatorArgs) => {
+  const filepath = argvNoOptions[argvNoOptions.indexOf('lsOrOpen') + 1]
+
+  const stats: { isDirectory: boolean; viewer: string } = await repl.qexec(`fstat ${repl.encodeComponent(filepath)}`)
+
+  const filepathForRepl = repl.encodeComponent(filepath)
+
+  if (stats.isDirectory) {
+    return repl.pexec(`ls ${filepathForRepl}`)
+  } else {
+    return repl.pexec(`${stats.viewer} ${filepathForRepl}`)
+  }
+}
+
+/**
+ * Kui command for fs.stat
+ *
+ */
+const fstat = ({ argvNoOptions, parsedOptions }: EvaluatorArgs) => {
+  return new Promise((resolve, reject) => {
+    const filepath = argvNoOptions[1]
+
     const { resolved: fullpath, viewer = 'open' } = findFileWithViewer(expandHomeDir(filepath))
-    const filepathForRepl = repl.encodeComponent(filepath)
+    debug('fullpath', fullpath, filepath, expandHomeDir(filepath))
 
     // note: stat not lstat, because we want to follow the link
     stat(fullpath, (err, stats) => {
       if (err) {
+        if (err.code === 'ENOENT') {
+          err.code = '404'
+        }
         reject(err)
-      } else if (stats.isDirectory()) {
-        resolve(repl.pexec(`ls ${filepathForRepl}`))
+      } else if (stats.isDirectory() || !parsedOptions['with-data']) {
+        resolve({
+          viewer,
+          filepath,
+          isDirectory: stats.isDirectory()
+        })
       } else {
-        resolve(repl.pexec(`${viewer} ${filepathForRepl}`))
+        readFile(fullpath, (err, data) => {
+          if (err) {
+            reject(err)
+          } else {
+            resolve({
+              viewer,
+              filepath,
+              data: data.toString(),
+              isDirectory: false
+            })
+          }
+        })
       }
     })
   })
+}
 
 /**
  * Turn ls output into a REPL table
@@ -135,6 +178,7 @@ const tabularize = (cmd: string, parsedOptions: ParsedOptions, parent = '', pare
   debug('tabularize', parent, parentAsGiven)
 
   if (output.length === 0) {
+    debug('tabularize empty')
     return true
   }
 
@@ -333,7 +377,8 @@ const tabularize = (cmd: string, parsedOptions: ParsedOptions, parent = '', pare
       return new Row({
         type: cmd,
         name: nameForDisplay,
-        onclick: () => lsOrOpen(isAbsolute(name) ? name : join(parentAsGiven, name)), // note: ls -l file results in an absolute path
+        onclickExec: 'qexec',
+        onclick: `lsOrOpen ${repl.encodeComponent(isAbsolute(name) ? name : join(parentAsGiven, name))}`, // note: ls -l file results in an absolute path
         css,
         attributes: permissionAttrs.concat(normalAttributes)
       })
@@ -354,12 +399,15 @@ const tabularize = (cmd: string, parsedOptions: ParsedOptions, parent = '', pare
  * ls command handler
  *
  */
-const doLs = (cmd: string) => ({
-  command,
-  execOptions,
-  argvNoOptions: argv,
-  parsedOptions: options
-}: EvaluatorArgs): Promise<true | Table> => {
+const doLs = (cmd: string) => async (opts: EvaluatorArgs) => {
+  const semi = await repl.semicolonInvoke(opts)
+  if (semi) {
+    debug('ls with semi', semi)
+    return semi
+  }
+
+  const { command, execOptions, argvNoOptions: argv, parsedOptions: options } = opts
+
   const filepathAsGiven = argv[argv.indexOf(cmd) + 1]
   const filepath = findFile(expandHomeDir(filepathAsGiven), {
     safe: true,
@@ -388,31 +436,31 @@ const doLs = (cmd: string) => ({
 
 const usage = (command: string) => ({
   command,
-  title: 'local file list',
-  header: 'Directory listing of your local filesystem',
+  title: strings('lsUsageTitle'),
+  header: strings('lsUsageHeader'),
   noHelpAlias: true,
   optional: localFilepath.concat([
-    { name: '-A', boolean: true, docs: 'List all entries except for . and ..' },
+    { name: '-A', boolean: true, docs: strings('lsDashAUsageDocs') },
     {
       name: '-a',
       boolean: true,
-      docs: 'Include directory entries whose names begin with a dot (.)'
+      docs: strings('lsDashaUsageDocs')
     },
     {
       name: '-c',
       boolean: true,
-      docs: 'Use time when file status was last changed for sorting (-t)'
+      docs: strings('lsDashcUsageDocs')
     },
     { name: '-l', boolean: true, hidden: true },
     { name: '-h', boolean: true, hidden: true },
     {
       name: '-t',
       boolean: true,
-      docs: 'Sort by time modified (most recently modified first)'
+      docs: strings('lsDashtUsageDocs')
     },
-    { name: '-r', boolean: true, docs: 'Reverse the natural sort order' },
+    { name: '-r', boolean: true, docs: strings('lsDashrUsageDocs') },
     { name: '-s', boolean: true, hidden: true }, // "show size", which we always do; so hidden: true
-    { name: '-S', boolean: true, docs: 'Sort files by size' }
+    { name: '-S', boolean: true, docs: strings('lsDashSUsageDocs') }
   ])
 })
 
@@ -421,6 +469,16 @@ const usage = (command: string) => ({
  *
  */
 export default (commandTree: CommandRegistrar) => {
+  commandTree.listen('/fstat', fstat, {
+    hidden: true,
+    noAuthOk: true,
+    requiresLocal: true
+  })
+  commandTree.listen('/lsOrOpen', lsOrOpen, {
+    hidden: true,
+    noAuthOk: true,
+    inBrowserOk: true
+  })
   const ls = commandTree.listen('/ls', doLs('ls'), {
     usage: usage('ls'),
     noAuthOk: true,

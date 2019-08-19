@@ -15,12 +15,15 @@
  */
 
 import * as common from '@kui-shell/core/tests/lib/common'
-import { cli, selectors, sidecar, AppAndCount } from '@kui-shell/core/tests/lib/ui'
+import { cli, selectors, sidecar, AppAndCount, expectText } from '@kui-shell/core/tests/lib/ui'
 import * as assert from 'assert'
 
 import { createNS, allocateNS, deleteNS } from '@kui-shell/plugin-k8s/tests/lib/k8s/utils'
 
-common.localDescribe('helm commands', function(this: common.ISuite) {
+const lists = ['list', 'ls']
+
+// TODO: enable this once proxy can find $HOME on travis
+describe('helm commands', function(this: common.ISuite) {
   before(common.before(this))
   after(common.after(this))
 
@@ -28,9 +31,42 @@ common.localDescribe('helm commands', function(this: common.ISuite) {
   const inNamespace = `--namespace ${ns}`
   const name = `test-release-${ns}`
 
-  allocateNS(this, ns)
+  it('should show 500 error for helm get', () => {
+    return cli
+      .do('helm get', this.app)
+      .then(cli.expectError(500, 'Error: release name is required'))
+      .catch(common.oops(this, true))
+  })
 
-  const lists = ['list', 'ls']
+  it('should show 500 error for helm get -h', () => {
+    return cli
+      .do('helm get -h', this.app)
+      .then(cli.expectError(500))
+      .catch(common.oops(this, true))
+  })
+
+  it('should show 500 error for helm create', () => {
+    return cli
+      .do('helm create', this.app)
+      .then(cli.expectError(500, 'Error: the name of the new chart is required'))
+      .catch(common.oops(this, true))
+  })
+
+  it('should show 500 error for helm install', () => {
+    return cli
+      .do('helm install', this.app)
+      .then(cli.expectError(500, 'Error: This command needs 1 argument: chart name'))
+      .catch(common.oops(this, true))
+  })
+
+  it('should show 500 error for helm delete', () => {
+    return cli
+      .do('helm delete', this.app)
+      .then(cli.expectError(500, "Error: command 'delete' requires a release name"))
+      .catch(common.oops(this, true))
+  })
+
+  allocateNS(this, ns)
 
   lists.forEach(list => {
     it(`should list empty releases via helm ${list}`, () => {
@@ -62,17 +98,35 @@ common.localDescribe('helm commands', function(this: common.ISuite) {
       .catch(common.oops(this))
   })
 
-  it(`should show the status of that new release`, () => {
+  it(`should show history`, () => {
     return cli
-      .do(`helm status ${name}`, this.app)
-      .then(checkHelmStatus)
+      .do(`helm history ${name}`, this.app)
+      .then(cli.expectOKWithCustom({ selector: selectors.TABLE_CELL('1', 'REVISION') }))
+      .then(expectText(this.app, '1'))
       .catch(common.oops(this))
   })
 
+  // confirm that helm list shows a row for our release
   it(`should list that new release via helm list`, () => {
     return cli
       .do(`helm list ${inNamespace}`, this.app)
       .then(cli.expectOKWith(name))
+      .catch(common.oops(this))
+  })
+
+  // also confirm that there is a REVISION column in that row
+  it(`should list that new release via helm list`, () => {
+    return cli
+      .do(`helm list ${inNamespace}`, this.app)
+      .then(cli.expectOKWithCustom({ selector: selectors.TABLE_CELL(name, 'REVISION') }))
+      .then(expectText(this.app, '1'))
+      .catch(common.oops(this))
+  })
+
+  it(`should show the status of that new release`, () => {
+    return cli
+      .do(`helm status ${name}`, this.app)
+      .then(checkHelmStatus)
       .catch(common.oops(this))
   })
 

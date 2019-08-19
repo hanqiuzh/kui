@@ -32,12 +32,14 @@ import { get as relevantModes } from '@kui-shell/core/webapp/views/registrar/mod
 import { FinalState } from '../model/states'
 import { KubeResource, Resource } from '../model/resource'
 
-import { redactYAML } from '../view/redact'
 import { statusButton } from '../view/modes/status'
 import { formatEntity } from '../view/formatEntity'
 import generateForm from '../view/form'
 
 import repl = require('@kui-shell/core/core/repl')
+
+import i18n from '@kui-shell/core/util/i18n'
+const strings = i18n('plugin-k8s')
 
 const debug = Debug('k8s/controller/kedit')
 
@@ -45,14 +47,14 @@ const usage = {
   kedit: {
     command: 'kedit',
     strict: 'kedit',
-    docs: 'Edit a resource definition file',
+    docs: strings('keditUsageDocs'),
     example: 'kedit @seed/cloud-functions/function/echo.yaml',
-    required: [{ name: 'file', file: true, docs: 'A kubernetes resource file or kind' }],
+    required: [{ name: 'file', file: true, docs: strings('keditUsageRequiredDocs') }],
     optional: [
       {
         name: 'resource',
         positional: true,
-        docs: 'A resource within the file to view'
+        docs: strings('keditUsageOptionalDocs')
       }
     ]
   }
@@ -138,7 +140,7 @@ const showResource = async (yaml: KubeResource, filepath: string, tab: Tab) => {
     lock: false, // we don't want a lock icon
     extract,
     filepath,
-    source: redactYAML(safeDump(yaml)),
+    source: safeDump(yaml),
     resource: yaml
   }
 

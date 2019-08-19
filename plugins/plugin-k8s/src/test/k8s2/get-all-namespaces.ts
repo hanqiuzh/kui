@@ -71,30 +71,26 @@ describe(`electron get all-namespaces ${process.env.MOCHA_RUN_TARGET || ''}`, fu
           await this.app.client.waitForExist(`${selector} .clickable [data-key="NAME"]`)
 
           // now click on that cell
-          this.app.client.click(`${selector} .clickable`)
+          await this.app.client.click(`${selector} .clickable`)
           await sidecar
             .expectOpen(this.app)
             .then(sidecar.expectMode(defaultModeForGet))
             .then(sidecar.expectShowing('nginx', undefined, undefined, ns))
         } catch (err) {
-          common.oops(this)(err)
+          return common.oops(this)(err)
         }
       })
     }
 
     /** delete the given namespace */
-    const deleteNs = (name: string, errOk = false) => {
+    const deleteNs = (name: string) => {
       it(`should delete the namespace ${name} via ${kubectl}`, () => {
         return cli
           .do(`${kubectl} delete namespace ${name}`, this.app)
           .then(cli.expectOKWithCustom({ selector: selectors.BY_NAME(name) }))
           .then(selector => waitForRed(this.app, selector))
           .then(() => waitTillNone('namespace', undefined, name))
-          .catch(err => {
-            if (!errOk) {
-              return common.oops(this)(err)
-            }
-          })
+          .catch(common.oops(this))
       })
     }
 

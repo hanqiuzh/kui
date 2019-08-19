@@ -30,7 +30,7 @@ import assert = require('assert')
 
 const synonyms = ['kubectl']
 
-describe(`electron get pod ${process.env.MOCHA_RUN_TARGET}`, function(this: common.ISuite) {
+describe(`kubectl get pod ${process.env.MOCHA_RUN_TARGET || ''}`, function(this: common.ISuite) {
   before(common.before(this))
   after(common.after(this))
 
@@ -40,7 +40,7 @@ describe(`electron get pod ${process.env.MOCHA_RUN_TARGET}`, function(this: comm
      *
      */
     const testContainersTab = async (fast = false) => {
-      this.app.client.click(selectors.SIDECAR_MODE_BUTTON('containers'))
+      await this.app.client.click(selectors.SIDECAR_MODE_BUTTON('containers'))
 
       const table = `${selectors.SIDECAR} [k8s-table="Containers"]`
       await this.app.client.waitForExist(table)
@@ -66,10 +66,56 @@ describe(`electron get pod ${process.env.MOCHA_RUN_TARGET}`, function(this: comm
     const inNamespace = `-n ${ns}`
     allocateNS(this, ns)
 
-    it('should error out when getting non-existant pod', () => {
-      const noName = 'thisShouldNotExist'
-      return cli.do(`${kubectl} get pod ${noName}`, this.app).then(cli.expectError(404))
+    /** error handling starts */
+    it('should error out when getting non-existent pod', () => {
+      const noName = 'shouldNotExist'
+      return cli
+        .do(`${kubectl} get pod ${noName}`, this.app)
+        .then(cli.expectError(404, `Error from server (NotFound): pods "${noName}" not found`))
+        .catch(common.oops(this))
     })
+
+    it('should error out when getting non-existent pod, with incorrect comment space', () => {
+      const noName = 'shouldNotExist#comment'
+      return cli
+        .do(`${kubectl} get pod ${noName}`, this.app)
+        .then(cli.expectError(404, `Error from server (NotFound): pods "${noName}" not found`))
+        .catch(common.oops(this))
+    })
+
+    it('should error out when getting non-existent pod, with correct comment', () => {
+      const noName = 'shouldNotExist'
+      return cli
+        .do(`${kubectl} get pod ${noName} #comment`, this.app)
+        .then(cli.expectError(404, `Error from server (NotFound): pods "${noName}" not found`))
+        .catch(common.oops(this))
+    })
+
+    /**
+     * NOTE [myan 20190816]: In the test case below, The error message is different based on kube version
+     * With version 1.12, the output is 'Error from server (NotFound): pods "shouldNotExist1" not found' only.
+     * With higher versions e.g. 1.14, the output is:
+     *  'Error from server (NotFound): pods "shouldNotExist1" not found
+     *   Error from server (NotFound): pods "shouldNotExist2" not found'
+     *
+     * TODO: We should test against different kube version
+     */
+    it('should error out when getting 2 non-existent pods', () => {
+      const noName1 = 'shouldNotExist1'
+      const noName2 = 'shouldNotExist2'
+      return cli
+        .do(`${kubectl} get pod ${noName1} ${noName2}`, this.app)
+        .then(cli.expectError(404))
+        .catch(common.oops(this))
+    })
+
+    it('should error out when getting pods with incorrect comments', () => {
+      return cli
+        .do(`${kubectl} get pod# comment #comment`, this.app)
+        .then(cli.expectError(404, 'error: the server doesn\'t have a resource type "pod#"'))
+        .catch(common.oops(this))
+    })
+    /** error handling ends */
 
     /** TODO: enabe the following test once we have sidecar table poller ready
     // do this a few times, as we might get lucky and have the
@@ -89,7 +135,7 @@ describe(`electron get pod ${process.env.MOCHA_RUN_TARGET}`, function(this: comm
 
           await waitForGreen(this.app, selector)
           await this.app.client.waitForExist(`${selector} .clickable`)
-          this.app.client.click(`${selector} .clickable`)
+          await this.app.client.click(`${selector} .clickable`)
           await sidecar
             .expectOpen(this.app)
             .then(sidecar.expectMode(defaultModeForGet))
@@ -97,7 +143,7 @@ describe(`electron get pod ${process.env.MOCHA_RUN_TARGET}`, function(this: comm
 
           await testContainersTab(true)
         } catch (err) {
-          common.oops(this)(err)
+          return common.oops(this)(err)
         }
       })
 
@@ -126,7 +172,7 @@ describe(`electron get pod ${process.env.MOCHA_RUN_TARGET}`, function(this: comm
 
         await waitForGreen(this.app, selector)
         await this.app.client.waitForExist(`${selector} .clickable`)
-        this.app.client.click(`${selector} .clickable`)
+        await this.app.client.click(`${selector} .clickable`)
         await sidecar
           .expectOpen(this.app)
           .then(sidecar.expectMode(defaultModeForGet))
@@ -134,7 +180,7 @@ describe(`electron get pod ${process.env.MOCHA_RUN_TARGET}`, function(this: comm
 
         await testContainersTab(true)
       } catch (err) {
-        common.oops(this)(err)
+        return common.oops(this)(err)
       }
     })
 
@@ -170,19 +216,19 @@ describe(`electron get pod ${process.env.MOCHA_RUN_TARGET}`, function(this: comm
         await waitForGreen(this.app, selector)
 
         // now click on the table row
-        this.app.client.click(`${selector} .clickable`)
+        await this.app.client.click(`${selector} .clickable`)
         await sidecar
           .expectOpen(this.app)
           .then(sidecar.expectMode(defaultModeForGet))
           .then(sidecar.expectShowing('nginx'))
       } catch (err) {
-        common.oops(this)(err)
+        return common.oops(this)(err)
       }
     })
 
     it(`should click on status sidecar tab and show status table`, async () => {
       try {
-        this.app.client.click(selectors.SIDECAR_MODE_BUTTON('status'))
+        await this.app.client.click(selectors.SIDECAR_MODE_BUTTON('status'))
 
         const table = `${selectors.SIDECAR} [k8s-table="Pod"]`
         await this.app.client.waitForExist(table)
@@ -192,21 +238,21 @@ describe(`electron get pod ${process.env.MOCHA_RUN_TARGET}`, function(this: comm
         // wait for the badge to become green
         await waitForGreen(this.app, `${table} .entity[data-name="nginx"]`) // [data-key="status"]
       } catch (err) {
-        common.oops(this)(err)
+        return common.oops(this)(err)
       }
     })
 
     it('should click on the sidecar maximize button', async () => {
       try {
-        this.app.client.click(selectors.SIDECAR_MAXIMIZE_BUTTON)
+        await this.app.client.click(selectors.SIDECAR_MAXIMIZE_BUTTON)
         await this.app.client.waitForExist(selectors.SIDECAR_FULLSCREEN)
       } catch (err) {
-        common.oops(this)(err)
+        return common.oops(this)(err)
       }
     })
 
     it(`should click on conditions sidecar tab and show conditions table`, async () => {
-      this.app.client.click(selectors.SIDECAR_MODE_BUTTON('conditions'))
+      await this.app.client.click(selectors.SIDECAR_MODE_BUTTON('conditions'))
 
       const table = `${selectors.SIDECAR} [k8s-table="Conditions"]`
       await this.app.client.waitForExist(table)
@@ -233,14 +279,26 @@ describe(`electron get pod ${process.env.MOCHA_RUN_TARGET}`, function(this: comm
 
     it('should click on the sidecar maximize button to restore split screen', async () => {
       try {
-        this.app.client.click(selectors.SIDECAR_MAXIMIZE_BUTTON)
-        await this.app.client.waitForExist(selectors.SIDECAR_FULLSCREEN, 5000, true)
+        await this.app.client.click(selectors.SIDECAR_MAXIMIZE_BUTTON)
+        await this.app.client.waitForExist(selectors.SIDECAR_FULLSCREEN, 20000, true)
       } catch (err) {
-        common.oops(this)(err)
+        return common.oops(this)(err)
       }
     })
 
     it(`should click on containers sidecar tab and show containers table`, testContainersTab)
+
+    it(`should be able to show table with grep`, async () => {
+      try {
+        const res = await cli.do(`${kubectl} get pods ${inNamespace} | grep nginx`, this.app)
+        const rows = selectors.xtermRows(res.count)
+
+        await this.app.client.waitForExist(rows)
+        await cli.expectOKWithString('nginx')
+      } catch (err) {
+        return common.oops(this, true)(err)
+      }
+    })
 
     it(`should delete the sample pod from URL via ${kubectl}`, () => {
       return cli

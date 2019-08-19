@@ -79,6 +79,7 @@ if [ -n "$TRAVIS_JOB_ID" ]; then
 else
     export DISPLAY=:0
 fi
+export DISPLAY
 
 #
 # note that, in the following, passing --bail to mocha means we fail
@@ -94,6 +95,7 @@ function go {
     NO_USAGE_TRACKING=true mocha \
                      -c \
                      --exit \
+                     --reporter ${MOCHA_REPORTER-spec} \
                      --bail \
                      --recursive \
                      --timeout ${TIMEOUT-60000} \

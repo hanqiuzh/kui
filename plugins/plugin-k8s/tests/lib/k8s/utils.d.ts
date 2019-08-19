@@ -52,6 +52,12 @@ declare function deleteNS (ctx: ISuite, ns: string, theCli?: headless | ui): voi
 declare function waitTillNone (kind: string, theCli?: headless | ui, name?: string, okToSurvive?: string, inNamespace?: string): (app: Application) => Promise<void>
 
 /**
+ * Wait till the given resource is Terminating
+ *
+ */
+declare function waitTillTerminating (kind: string, theCli: headless | ui, name: string, inNamespace?: string): (app: Application) => Promise<void>
+
+/**
  * Wait for a green badge
  *
  */
@@ -68,3 +74,9 @@ declare function waitForRed (app: Application, selector: string): Promise<string
  *
  */
 declare function assertTableTitleMatches(self: ISuite, tableSelector: string, expectedTitle: string): Promise<never>
+
+/**
+ * Type slowly, this helps with some odd webpack+proxy issues
+ *
+ */
+declare function typeSlowly(app: Application, txt: string): Promise<void>

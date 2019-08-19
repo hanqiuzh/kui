@@ -31,7 +31,7 @@ import {
   show as showSidecar,
   toggleMaximization
 } from '@kui-shell/core/webapp/views/sidecar'
-import { CommandRegistrar, EvaluatorArgs } from '@kui-shell/core/models/command'
+import { CommandRegistrar, EvaluatorArgs, ExecType } from '@kui-shell/core/models/command'
 
 const debug = Debug('plugins/tutorials/play')
 
@@ -56,6 +56,10 @@ try {
   $ = require('jquery')
 } catch (err) {
   debug('not loading jquery in headless mode ')
+}
+
+interface TutorialPane extends HTMLDivElement {
+  cancellables: (() => void)[]
 }
 
 /**
@@ -158,7 +162,7 @@ const clearHighlights = () => {
  * Close the current tutorial
  *
  */
-const close = (tab: cli.Tab, pane: Element, obj, delay = 500) => () =>
+const close = (tab: cli.Tab, pane: TutorialPane, obj: TutorialDefinition, delay = 500) => () =>
   new Promise<boolean>(resolve => {
     debug('close')
 
@@ -197,7 +201,7 @@ const close = (tab: cli.Tab, pane: Element, obj, delay = 500) => () =>
  * Is this tutorial a one-page full-screener?
  *
  */
-const isOnePageFullscreenTutorial = obj =>
+const isOnePageFullscreenTutorial = (obj: TutorialDefinition) =>
   obj.steps !== undefined && obj.steps.length === 1 && obj.fullscreen !== undefined
 
 /**
@@ -220,7 +224,7 @@ const setHighlightPosition = ({ selector }) => {
  * Execute a command, handling the fullscreen toggle
  *
  */
-const commandFromFullscreen = (pane, command, display = command) => () => {
+const commandFromFullscreen = (pane: TutorialPane, command: string, display = command, nested = false) => () => {
   const go = () => {
     repl.pexec(command)
 
@@ -231,12 +235,20 @@ const commandFromFullscreen = (pane, command, display = command) => () => {
     }
   }
 
+  if (nested) {
+    go()
+    return
+  }
+
   if (pane.hasAttribute('tutorial-is-fullscreen')) {
     pane.setAttribute('tutorial-was-fullscreen', '1')
     pane.removeAttribute('tutorial-is-fullscreen')
     document.body.classList.remove('tutorial-is-fullscreen')
   } else if (pane.hasAttribute('tutorial-was-fullscreen')) {
-    pane.setAttribute('tutorial-was-fullscreen', 1 + parseInt(pane.getAttribute('tutorial-was-fullscreen'), 10))
+    pane.setAttribute(
+      'tutorial-was-fullscreen',
+      (1 + parseInt(pane.getAttribute('tutorial-was-fullscreen'), 10)).toString()
+    )
   }
 
   // switch to minimized mode, unless this is a tutorial play
@@ -268,7 +280,7 @@ const commandFromFullscreen = (pane, command, display = command) => () => {
  * @param table the model
  *
  */
-const renderOneTable = (parent, pane) => table => {
+const renderOneTable = (parent: Element, pane: TutorialPane, nested = false) => table => {
   const template = document.querySelector('#tutorial-structured-list-template')
   const tableDom = template.cloneNode(true) as HTMLElement
   const tableBody = tableDom.querySelector('.bx--structured-list-tbody')
@@ -311,7 +323,8 @@ const renderOneTable = (parent, pane) => table => {
 
         row.forEach((cell, idx) => {
           const value = typeof cell === 'string' ? cell : cell.value
-          const onclick = cell.onclick || (cell.command && commandFromFullscreen(pane, cell.command, cell.display))
+          const onclick =
+            cell.onclick || (cell.command && commandFromFullscreen(pane, cell.command, cell.display, nested))
 
           debug('cell', value)
           const cellDom = document.createElement('td')
@@ -342,7 +355,13 @@ const renderOneTable = (parent, pane) => table => {
  * Handle transitions between steps
  *
  */
-const transitionSteps = (tab: cli.Tab, stepNum: number, obj: TutorialDefinition, pane: HTMLElement) => {
+const transitionSteps = (
+  tab: cli.Tab,
+  stepNum: number,
+  obj: TutorialDefinition,
+  pane: TutorialPane,
+  nested = false
+) => {
   debug('step', stepNum, obj)
 
   // cancel any background tasks
@@ -365,22 +384,29 @@ const transitionSteps = (tab: cli.Tab, stepNum: number, obj: TutorialDefinition,
 
   // heading text
   const headingDom = pane.querySelector('.tutorial-heading') as HTMLElement
-  headingDom.innerText = heading
+  if (headingDom) {
+    headingDom.innerText = heading
+  }
 
   // render the description
-  pane.querySelector('.tutorial-content .tutorial-paragraphs').innerHTML = marked(content)
+  const paragraphs = pane.querySelector('.tutorial-content .tutorial-paragraphs')
+  if (paragraphs) {
+    paragraphs.innerHTML = marked(content)
+  }
 
   const fontGraphics = pane.querySelector('.tutorial-font-graphics')
-  removeAllDomChildren(fontGraphics)
-  if (fontawesome) {
-    // add a font graphic
-    debug('fontawesome', fontawesome)
-    const graphics = document.createElement('i')
-    graphics.className = fontawesome
-    fontGraphics.appendChild(graphics)
-    fontGraphics.classList.add('visible')
-  } else {
-    fontGraphics.classList.remove('visible')
+  if (fontGraphics) {
+    removeAllDomChildren(fontGraphics)
+    if (fontawesome) {
+      // add a font graphic
+      debug('fontawesome', fontawesome)
+      const graphics = document.createElement('i')
+      graphics.className = fontawesome
+      fontGraphics.appendChild(graphics)
+      fontGraphics.classList.add('visible')
+    } else {
+      fontGraphics.classList.remove('visible')
+    }
   }
 
   // rendering hints from the step
@@ -408,127 +434,131 @@ const transitionSteps = (tab: cli.Tab, stepNum: number, obj: TutorialDefinition,
 
   // removeAllDomChildren(extrasPart);
   const learnMore = pane.querySelector('.tutorial-learn-more')
-  learnMore.classList.remove('has-learn-more')
-  if (!extras) {
-    pane.classList.add('tutorial-no-extras')
-  } else {
-    debug('extras', extras)
-    pane.classList.remove('tutorial-no-extras')
-
-    //
-    // learn more
-    //
-    if (extras.learnMore) {
-      const titleDom = learnMore.querySelector('.tutorial-content-extras-title') as HTMLElement
-      titleDom.innerText = extras.learnMore.title || 'Notes'
-      learnMore.classList.add('has-learn-more')
-      learnMore.querySelector('.tutorial-learn-more-content').innerHTML = marked(extras.learnMore.doc)
-    }
-
-    //
-    // code
-    //
-    const codeContainer = pane.querySelector('.tutorial-code-snippet')
-    if (!extras.code) {
-      codeContainer.classList.remove('has-code')
+  if (learnMore) {
+    learnMore.classList.remove('has-learn-more')
+    if (!extras) {
+      pane.classList.add('tutorial-no-extras')
     } else {
-      codeContainer.classList.add('has-code')
-      const codePart = codeContainer.querySelector('code')
-      codePart.className = `language-${extras.code.language}`
-      codePart.innerText = extras.code.body
-      // setTimeout(() => hljs.highlightBlock(codePart), 100)
-      hljs.highlightBlock(codePart)
-    }
+      debug('extras', extras)
+      pane.classList.remove('tutorial-no-extras')
 
-    let table = extras.table as TutorialTable
-    const nextSteps = extras.nextSteps || extras.alternate
-    if (nextSteps) {
-      table = {
-        title: extras.alternate ? 'Alternate Adventures' : 'Next Steps',
-        columns: ['Command', 'Description'],
-        rows: nextSteps
-          .filter(_ => !_.hidden)
-          .map(({ command, display = command, doc, when }) => [
-            {
-              value: display,
-              when,
-              onclick: commandFromFullscreen(pane, command, display)
-            },
-            doc
-          ])
+      //
+      // learn more
+      //
+      if (extras.learnMore) {
+        const titleDom = learnMore.querySelector('.tutorial-content-extras-title') as HTMLElement
+        titleDom.innerText = extras.learnMore.title || 'Notes'
+        learnMore.classList.add('has-learn-more')
+        learnMore.querySelector('.tutorial-learn-more-content').innerHTML = marked(extras.learnMore.doc)
       }
-    }
 
-    // remove any previous tables
-    const tables = extrasPart.querySelectorAll('.tutorial-content-extras-as-structured-list:not(.tutorial-template)')
-    for (let idx = 0; idx < tables.length; idx++) {
-      tables[idx].parentNode.removeChild(tables[idx])
-    }
-
-    if (!table) {
-      extrasPart.classList.remove('visible')
-    } else {
-      // ok, then the page model specifies one or more tables
-      if (Array.isArray(table)) {
-        table.forEach(renderOneTable(extrasPart, pane))
-      } else {
-        renderOneTable(extrasPart, pane)(table)
-      }
-    }
-
-    if (extras.showcase) {
-      const container = pane.querySelector('.tutorial-bottom')
-      removeAllDomChildren(container)
-
-      pane.setAttribute('tutorial-has-showcase', 'tutorial-has-showcase')
-
-      extras.showcase.forEach(({ title, command, display = command, description, image, groupWith }) => {
-        const element = document.createElement('div')
-        element.className = 'tutorial-showcase-element'
-
-        if (command) {
-          element.onclick = commandFromFullscreen(pane, command, display)
-        }
-
-        const imagePart = document.createElement('img')
-        imagePart.className = 'clickable'
-        imagePart.setAttribute('src', image)
-        element.appendChild(imagePart)
-
-        const overlayPart = document.createElement('div')
-        const titlePart = document.createElement('h2')
-        const descriptionPart = document.createElement('div')
-        overlayPart.className = 'tutorial-showcase-element-overlay bx--tile'
-        titlePart.className = 'tutorial-showcase-element-overlay-title'
-        descriptionPart.className = 'tutorial-showcase-element-overlay-description smaller-text'
-        overlayPart.appendChild(titlePart)
-        overlayPart.appendChild(descriptionPart)
-        titlePart.innerText = title
-        descriptionPart.innerHTML = marked(description)
-        element.appendChild(overlayPart)
-
-        const newGroup = () => {
-          const group = document.createElement('div')
-          group.className = 'tutorial-showcase-group'
-          group.appendChild(element)
-          container.appendChild(group)
-        }
-
-        if (!groupWith) {
-          newGroup()
+      //
+      // code
+      //
+      const codeContainer = pane.querySelector('.tutorial-code-snippet')
+      if (codeContainer) {
+        if (!extras.code) {
+          codeContainer.classList.remove('has-code')
         } else {
-          try {
-            // eslint-disable-next-line no-eval
-            const fn = eval(groupWith)
-            const group = fn(container.children)
-            group.appendChild(element)
-          } catch (err) {
-            debug('error in groupWith', groupWith)
-            console.error(err)
-            newGroup()
-          }
+          codeContainer.classList.add('has-code')
+          const codePart = codeContainer.querySelector('code')
+          codePart.className = `language-${extras.code.language}`
+          codePart.innerText = extras.code.body
+          // setTimeout(() => hljs.highlightBlock(codePart), 100)
+          hljs.highlightBlock(codePart)
         }
-      })
+      }
+
+      let table = extras.table as TutorialTable
+      const nextSteps = extras.nextSteps || extras.alternate
+      if (nextSteps) {
+        table = {
+          title: extras.alternate ? 'Alternate Adventures' : 'Next Steps',
+          columns: ['Command', 'Description'],
+          rows: nextSteps
+            .filter(_ => !_.hidden)
+            .map(({ command, display = command, doc, when }) => [
+              {
+                value: display,
+                when,
+                onclick: commandFromFullscreen(pane, command, display, nested)
+              },
+              doc
+            ])
+        }
+      }
+
+      // remove any previous tables
+      const tables = extrasPart.querySelectorAll('.tutorial-content-extras-as-structured-list:not(.tutorial-template)')
+      for (let idx = 0; idx < tables.length; idx++) {
+        tables[idx].parentNode.removeChild(tables[idx])
+      }
+
+      if (!table) {
+        extrasPart.classList.remove('visible')
+      } else {
+        // ok, then the page model specifies one or more tables
+        if (Array.isArray(table)) {
+          table.forEach(renderOneTable(extrasPart, pane, nested))
+        } else {
+          renderOneTable(extrasPart, pane, nested)(table)
+        }
+      }
+
+      if (extras.showcase) {
+        const container = pane.querySelector('.tutorial-bottom')
+        removeAllDomChildren(container)
+
+        pane.setAttribute('tutorial-has-showcase', 'tutorial-has-showcase')
+
+        extras.showcase.forEach(({ title, command, display = command, description, image, groupWith }) => {
+          const element = document.createElement('div')
+          element.className = 'tutorial-showcase-element'
+
+          if (command) {
+            element.onclick = commandFromFullscreen(pane, command, display, nested)
+          }
+
+          const imagePart = document.createElement('img')
+          imagePart.className = 'clickable'
+          imagePart.setAttribute('src', image)
+          element.appendChild(imagePart)
+
+          const overlayPart = document.createElement('div')
+          const titlePart = document.createElement('h2')
+          const descriptionPart = document.createElement('div')
+          overlayPart.className = 'tutorial-showcase-element-overlay bx--tile'
+          titlePart.className = 'tutorial-showcase-element-overlay-title'
+          descriptionPart.className = 'tutorial-showcase-element-overlay-description smaller-text'
+          overlayPart.appendChild(titlePart)
+          overlayPart.appendChild(descriptionPart)
+          titlePart.innerText = title
+          descriptionPart.innerHTML = marked(description)
+          element.appendChild(overlayPart)
+
+          const newGroup = () => {
+            const group = document.createElement('div')
+            group.className = 'tutorial-showcase-group'
+            group.appendChild(element)
+            container.appendChild(group)
+          }
+
+          if (!groupWith) {
+            newGroup()
+          } else {
+            try {
+              // eslint-disable-next-line no-eval
+              const fn = eval(groupWith)
+              const group = fn(container.children)
+              group.appendChild(element)
+            } catch (err) {
+              debug('error in groupWith', groupWith)
+              console.error(err)
+              newGroup()
+            }
+          }
+        })
+      }
     }
   }
 
@@ -557,67 +587,69 @@ const transitionSteps = (tab: cli.Tab, stepNum: number, obj: TutorialDefinition,
   }
 
   const nextButton = pane.querySelector('.tNext')
-  nextButton.setAttribute('disabled', 'disabled')
-  if (transition === 'next' || transition === undefined) {
-    //
-    // Handle transition via a next button
-    //
-    if (stepNum !== obj.steps.length - 1) {
-      nextButton.removeAttribute('disabled')
-    }
-  } else if (transition === 'input') {
-    //
-    // Handle transition via an input value
-    //
-    const { selector, value } = input
+  if (nextButton) {
+    nextButton.setAttribute('disabled', 'disabled')
+    if (transition === 'next' || transition === undefined) {
+      //
+      // Handle transition via a next button
+      //
+      if (stepNum !== obj.steps.length - 1) {
+        nextButton.removeAttribute('disabled')
+      }
+    } else if (transition === 'input') {
+      //
+      // Handle transition via an input value
+      //
+      const { selector, value } = input
 
-    const handler = function(event) {
-      if (event.keyCode === 13) {
-        // 13 is the keycode for Enter
-        if (
-          $(selector)
-            .val()
-            .trim() === value
-        ) {
-          // unbind, move to the next step;
+      const handler = function(event) {
+        if (event.keyCode === 13) {
+          // 13 is the keycode for Enter
+          if (
+            $(selector)
+              .val()
+              .trim() === value
+          ) {
+            // unbind, move to the next step;
+            $(document).unbind('keydown', handler)
+            $(pane).prop('step', stepNum + 1)
+            transitionSteps(tab, stepNum + 1, obj, pane)
+          }
+        }
+      }
+      $(document).bind('keydown', handler)
+    } else if (transition === 'enter') {
+      //
+      // Handle transition via the user hitting 'enter' on their keyboard
+      //
+      $(pane)
+        .find('.tBack')
+        .css('display', 'inline-block')
+      const handler = function(event) {
+        if (event.keyCode === 13) {
           $(document).unbind('keydown', handler)
           $(pane).prop('step', stepNum + 1)
           transitionSteps(tab, stepNum + 1, obj, pane)
         }
       }
-    }
-    $(document).bind('keydown', handler)
-  } else if (transition === 'enter') {
-    //
-    // Handle transition via the user hitting 'enter' on their keyboard
-    //
-    $(pane)
-      .find('.tBack')
-      .css('display', 'inline-block')
-    const handler = function(event) {
-      if (event.keyCode === 13) {
-        $(document).unbind('keydown', handler)
+      $(document).bind('keydown', handler)
+    } else if (transition === 'click') {
+      //
+      // Handle transition via a click
+      //
+      const { selector } = input
+
+      // Show back button
+      $(pane)
+        .find('.tBack')
+        .css('display', 'inline-block')
+      const handler = function() {
+        $(this).unbind('click', handler)
         $(pane).prop('step', stepNum + 1)
         transitionSteps(tab, stepNum + 1, obj, pane)
       }
+      $(selector).bind('click', handler)
     }
-    $(document).bind('keydown', handler)
-  } else if (transition === 'click') {
-    //
-    // Handle transition via a click
-    //
-    const { selector } = input
-
-    // Show back button
-    $(pane)
-      .find('.tBack')
-      .css('display', 'inline-block')
-    const handler = function() {
-      $(this).unbind('click', handler)
-      $(pane).prop('step', stepNum + 1)
-      transitionSteps(tab, stepNum + 1, obj, pane)
-    }
-    $(selector).bind('click', handler)
   }
 
   // Set highlight
@@ -662,8 +694,8 @@ const transitionSteps = (tab: cli.Tab, stepNum: number, obj: TutorialDefinition,
  *
  */
 const focusOnBiggestScrollable = () => {
-  const allScrollables = document.querySelectorAll('#tutorialPane .scrollable')
-  let biggest
+  const allScrollables: NodeListOf<HTMLElement> = document.querySelectorAll('#tutorialPane .scrollable')
+  let biggest: { element: HTMLElement; rect: ClientRect }
   for (let idx = 0; idx < allScrollables.length; idx++) {
     const rect = allScrollables[idx].getBoundingClientRect()
     if (!biggest || rect.height > biggest.rect.height) {
@@ -686,7 +718,7 @@ const showTutorial = (tab: cli.Tab, tutorialName: string, obj: TutorialDefinitio
   // remove the sidecar, if it's open
   clearSelection(tab)
 
-  const pane = document.querySelector('#tutorialPane') as HTMLElement
+  const pane = document.querySelector('#tutorialPane') as TutorialPane
   pane.classList.remove('minimized')
   pane.removeAttribute('tutorial-has-showcase')
 
@@ -836,7 +868,7 @@ const showTutorial = (tab: cli.Tab, tutorialName: string, obj: TutorialDefinitio
  * Command handler for tutorial play
  *
  */
-const use = (cmd: string) => ({ argvNoOptions, tab }: EvaluatorArgs) => {
+const use = (cmd: string) => async ({ argvNoOptions, tab, execOptions, parsedOptions }: EvaluatorArgs) => {
   injectOurCSS()
 
   // inject the HTML if needed
@@ -844,9 +876,35 @@ const use = (cmd: string) => ({ argvNoOptions, tab }: EvaluatorArgs) => {
 
   const filepath = argvNoOptions[argvNoOptions.indexOf(cmd) + 1]
 
-  return Promise.all([readProject(findFile(filepath)), ready]).then(([{ config, tutorial }]) =>
-    showTutorial(tab, config.name, tutorial || config.tutorial)
-  )
+  const [{ config, tutorial }] = await Promise.all([readProject(findFile(filepath)), ready])
+
+  if (execOptions.type === ExecType.Nested && !parsedOptions['top-level']) {
+    // initiate just the first step
+    const pane = document.createElement('div') as TutorialPane
+    pane.classList.add('tutorialPane')
+    const body = document.createElement('div')
+    body.classList.add('tutorial-body')
+    pane.appendChild(body)
+    const content = document.createElement('div')
+    content.classList.add('tutorial-content')
+    body.appendChild(content)
+    const paragraphs = document.createElement('div')
+    paragraphs.classList.add('tutorial-paragraphs')
+    content.appendChild(paragraphs)
+    const learnMore = document.createElement('div')
+    learnMore.classList.add('tutorial-learn-more')
+    content.appendChild(learnMore)
+    const extras = document.createElement('div')
+    extras.classList.add('tutorial-content-extras')
+    content.appendChild(extras)
+    const list = document.createElement('div')
+    list.classList.add('tutorial-content-extras-as-structured-list')
+    extras.appendChild(list)
+    transitionSteps(tab, 0, tutorial || config.tutorial, pane, true)
+    return pane
+  } else {
+    return showTutorial(tab, config.name, tutorial || config.tutorial)
+  }
 }
 
 /** this is useful if we want to display the step "blocks" as a square */
@@ -872,7 +930,8 @@ const usage = (cmd: string) => ({
   title: 'Start tutorial',
   header: 'Start playing a tutorial',
   example: `tutorial ${cmd} @tutorials/<tutorialName>`,
-  required: [{ name: 'tutorialPath', file: true, docs: 'Path or URI to a tutorial' }]
+  required: [{ name: 'tutorialPath', file: true, docs: 'Path or URI to a tutorial' }],
+  optional: [{ name: '--top-level', docs: 'Render as a top-level tutorial' }]
 })
 
 /**

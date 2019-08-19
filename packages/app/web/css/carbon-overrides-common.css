@@ -19,12 +19,13 @@ li.bx--tabs__nav-item.sidecar-bottom-stripe-button a {
 body[kui-theme-style] .bx--link {
   font-weight: 600;
   color: var(--color-brand-01);
-  text-decoration: underline;
+  /* text-decoration: underline; */
   transition: 250ms;
   pointer-events: unset;
   touch-action: unset;
 }
-body[kui-theme-style] .bx--link:not([href]) {
+body[kui-theme-style] .bx--link:not([href]),
+body[kui-theme-style] .bx--link:visited {
   color: var(--color-brand-01);
 }
 body[kui-theme-style] .bx--link:hover {
@@ -34,4 +35,9 @@ body[kui-theme-style] .bx--link:hover {
 .repl-block.processing .repl-prompt-right-element-status-icon .kui--icon-processing svg circle.bx--loading__stroke-kui {
   stroke: var(--color-text-02);
   stroke-dashoffset: 10;
+}
+
+body[kui-theme-style] .bx--structured-list-th,
+body[kui-theme-style] .bx--structured-list-td {
+  color: inherit;
 }

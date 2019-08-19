@@ -15,7 +15,7 @@
  */
 
 import * as common from '@kui-shell/core/tests/lib/common'
-import { cli, keys, selectors } from '@kui-shell/core/tests/lib/ui'
+import { cli, selectors } from '@kui-shell/core/tests/lib/ui'
 import { waitForGreen, createNS, allocateNS, deleteNS } from '@kui-shell/plugin-k8s/tests/lib/k8s/utils'
 
 import { readFileSync } from 'fs'
@@ -32,40 +32,33 @@ describe(`kubectl exec basic stuff ${process.env.MOCHA_RUN_TARGET || ''}`, funct
   allocateNS(this, ns)
 
   const podName = 'vim'
-  it(`should create sample pod from URL`, () => {
+  it('should create sample pod from URL', () => {
     return cli
       .do(`echo ${inputEncoded} | base64 --decode | kubectl create -f - -n ${ns}`, this.app)
       .then(cli.expectOKWithString(podName))
-      .catch(common.oops(this))
+      .catch(common.oops(this, true))
   })
 
-  it(`should wait for the pod to come up`, () => {
+  it('should wait for the pod to come up', () => {
     return cli
       .do(`kubectl get pod ${podName} -n ${ns} -w`, this.app)
       .then(cli.expectOKWithCustom({ selector: selectors.BY_NAME(podName) }))
       .then(selector => waitForGreen(this.app, selector))
-      .catch(common.oops(this))
+      .catch(common.oops(this, true))
   })
 
-  it(`should exec bash through pty`, () => {
+  it('should exec ls through pty', () => {
     return cli
-      .do(`kubectl exec -it ${podName} -n ${ns} ls`, this.app)
-      .then(() => this.app.client.getAttribute(`${selectors.PROMPT_BLOCK}.processing`, 'data-input-count'))
-      .then(count => parseInt(count, 10))
-      .then(count => this.app.client.waitForExist(`${selectors.xtermRows(count)}`, 5000))
-      .then(() => {
-        this.app.client.keys('exit')
-        this.app.client.keys(keys.ENTER)
-      })
-      .catch(common.oops(this))
+      .do(`kubectl exec ${podName} -n ${ns} -- ls`, this.app)
+      .then(cli.expectOKWithString('bin'))
+      .catch(common.oops(this, true))
   })
 
-  it(`should exec pwd through pty`, () => {
+  it('should exec pwd through pty', () => {
     return cli
-      .do(`kubectl exec -it ${podName} -n ${ns} pwd`, this.app)
-      .then(() => this.app.client.waitForExist(`${selectors.OUTPUT_LAST}`, 5000))
-      .then(() => cli.expectOKWithCustom({ selector: selectors.BY_NAME('/') }))
-      .catch(common.oops(this))
+      .do(`kubectl exec ${podName} -n ${ns} -- pwd`, this.app)
+      .then(cli.expectOKWithString('/'))
+      .catch(common.oops(this, true))
   })
 
   deleteNS(this, ns)

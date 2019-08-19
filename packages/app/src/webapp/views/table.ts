@@ -15,6 +15,7 @@
  */
 
 import * as Debug from 'debug'
+import minimist = require('yargs-parser')
 
 import { Tab, isPopup, getCurrentPrompt } from '../cli'
 import { pexec, qexec } from '../../core/repl'
@@ -35,7 +36,7 @@ import { applyDiffTable } from '../views/diffTable'
 import { theme } from '@kui-shell/core/core/settings'
 import { _split as split, Split } from '@kui-shell/core/core/repl'
 import { WatchableJob } from '@kui-shell/core/core/job'
-import minimist = require('yargs-parser')
+import { isHTML } from '@kui-shell/core/util/types'
 
 const debug = Debug('webapp/views/table')
 
@@ -272,7 +273,7 @@ const registerWatcher = (
   // timer handler
   const watchIt = () => {
     if (--watchLimit < 0) {
-      debug('watchLimit exceeded')
+      console.error('watchLimit exceeded')
       job.abort()
     } else {
       try {
@@ -293,11 +294,13 @@ const registerWatcher = (
  * Replace fontawesome names with svgs
  *
  */
-function formatIcon(fontawesome: string) {
+function formatIcon(fontawesome: string, cell: HTMLElement) {
   if (/fa-check$/.test(fontawesome)) {
     // the first svg is radio-checked; the second is
     // radio-unchecked; we will use css to swap between the two,
     // governed by either :hover or .selected-row
+    cell.classList.add('radio-button-width')
+
     const icon1 = document.createElement('i')
     const icon2 = document.createElement('i')
     icon1.innerHTML =
@@ -422,7 +425,7 @@ export const formatOneRowResult = (tab: Tab, options: RowFormatOptions = {}) => 
 
   // click handler for the list result
   if (entity.fontawesome) {
-    const icon = formatIcon(entity.fontawesome)
+    const icon = formatIcon(entity.fontawesome, entityNameGroup)
     entityNameClickable.appendChild(icon)
   } else if (typeof name === 'string') {
     entityNameClickable.title = name
@@ -453,7 +456,13 @@ export const formatOneRowResult = (tab: Tab, options: RowFormatOptions = {}) => 
         return drilldown(tab, entity.onclick, undefined, '.custom-content .padding-content', 'previous view')(evt)
       }
     } else if (typeof entity.onclick === 'string') {
-      entityNameClickable.onclick = () => pexec(entity.onclick, { tab })
+      entityNameClickable.onclick = () => {
+        if (!entity.onclickExec || entity.onclickExec === 'pexec') {
+          pexec(entity.onclick, { tab })
+        } else {
+          qexec(entity.onclick, undefined, undefined, { tab })
+        }
+      }
     } else {
       entityNameClickable.onclick = entity.onclick
     }
@@ -502,7 +511,7 @@ export const formatOneRowResult = (tab: Tab, options: RowFormatOptions = {}) => 
 
     if (fontawesome) {
       const addIcon = (theIcon: Icon) => {
-        const icon = formatIcon(theIcon.fontawesome)
+        const icon = formatIcon(theIcon.fontawesome, cell)
 
         if (typeof onclick === 'function') {
           icon.onclick = onclick
@@ -544,15 +553,19 @@ export const formatOneRowResult = (tab: Tab, options: RowFormatOptions = {}) => 
 
         inner.appendChild(container)
       } else {
-        Promise.resolve(valueDom).then(valueDom =>
-          inner.appendChild(valueDom.nodeName ? valueDom : document.createTextNode(valueDom.toString()))
-        )
+        Promise.resolve(valueDom).then(valueDom => {
+          if (isHTML(valueDom)) {
+            inner.appendChild(valueDom)
+          } else {
+            valueDom.appendChild(document.createTextNode(valueDom.toString()))
+          }
+        })
       }
     } else if (value !== undefined) {
       // value could be an empty string
       Promise.resolve(value).then(value => {
         inner.title = value
-        inner.appendChild(document.createTextNode(isHeaderCell ? value.toLowerCase() : value))
+        inner.appendChild(document.createTextNode(isHeaderCell ? value.toLowerCase() : value || '\u00a0'))
       })
     } else {
       console.error('Invalid cell model, no value field', theCell)

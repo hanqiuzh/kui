@@ -17,9 +17,12 @@
 const ui = require('./ui')
 require('colors')
 
-/** electron targets in travis use the clients/default version */
+/** non-headless targets in travis use the clients/default version */
 exports.expectedVersion =
-  process.env.MOCHA_RUN_TARGET === 'electron' ? '0.0.1' : require('@kui-shell/settings/package.json').version
+  process.env.TRAVIS_JOB_ID &&
+  (process.env.MOCHA_RUN_TARGET === 'electron' || process.env.MOCHA_RUN_TARGET === 'webpack')
+    ? '0.0.1'
+    : require('@kui-shell/settings/package.json').version
 
 /**
  * Mimic the request-promise functionality, but with retry
@@ -41,6 +44,51 @@ exports.rp = opts => {
       }
     })
   })
+}
+
+/**
+ * Wait, if needed, for a proxy session
+ *
+ */
+function waitForSession(ctx, noProxySessionWait = false) {
+  if (process.env.MOCHA_RUN_TARGET === 'webpack' && process.env.KUI_USE_PROXY === 'true' && !noProxySessionWait) {
+    // wait for the proxy session to be established
+    try {
+      return ctx.app.client.waitForExist(`${ui.selectors.CURRENT_TAB}.kui--session-init-done`)
+    } catch (err) {
+      throw new Error('error waiting for proxy session init')
+    }
+  }
+}
+
+/**
+ * Try to avoid restarting electron if we can; then, when all is said
+ * and done, quit that singleton electron
+ *
+ */
+let app
+after(async () => {
+  if (app && app.isRunning()) {
+    await app.stop()
+  }
+})
+
+/** reload the app */
+exports.refresh = async (ctx, wait = true, clean = false) => {
+  await ctx.app.client.refresh()
+  if (clean) {
+    await ctx.app.client.localStorage('DELETE') // clean out local storage
+  }
+  if (wait) {
+    await waitForSession(ctx)
+    await ui.cli.waitForRepl(ctx.app)
+  }
+}
+
+/** restart the app */
+exports.restart = async ctx => {
+  await ctx.app.restart()
+  return waitForSession(ctx)
 }
 
 /**
@@ -117,35 +165,67 @@ exports.prepareElectron = prepareElectron
  * @param noApp do not spawn the electron parts
  *
  */
-exports.before = (ctx, { fuzz, noApp = false, popup, afterStart } = {}) => {
+exports.before = (ctx, { fuzz, noApp = false, popup, afterStart, beforeStart, noProxySessionWait = false } = {}) => {
   if (process.env.TRAVIS_JOB_ID) {
-    ctx.retries(2) // don't retry the mocha.it in local testing
+    ctx.retries(1) // don't retry the mocha.it in local testing
   }
 
   return async function() {
+    // by default, we expect not to have to destroy the app when this
+    // describe is done
+    ctx._kuiDestroyAfter = false
+
     if (!noApp) {
+      if (app && !popup) {
+        if (!beforeStart && !afterStart) {
+          ctx.app = app
+          try {
+            await exports.refresh(ctx, !noProxySessionWait, true)
+            return
+          } catch (err) {
+            console.error('error refreshing in before for reuse start', err)
+            throw err
+          }
+        }
+      }
       ctx.app = prepareElectron(fuzz, popup)
+      if (popup) {
+        // for popups, we want to destroy the app when the describe is done
+        ctx._kuiDestroyAfter = true
+      } else {
+        app = ctx.app
+      }
     }
 
-    // start the app, if requested
-    const start = noApp
-      ? () => Promise.resolve()
-      : () => {
-          return (
-            ctx.app
-              .start() // this will launch electron
-              // commenting out setTitle due to buggy spectron (?) "Cannot call function 'setTitle' on missing remote object 1"
-              // .then(() => ctx.title && ctx.app.browserWindow.setTitle(ctx.title)) // set the window title to the current test
-              .then(() => ctx.app.client.localStorage('DELETE')) // clean out local storage
-              .then(() => ui.cli.waitForRepl(ctx.app))
-          ) // should have an active repl
-        }
+    try {
+      if (beforeStart) {
+        await beforeStart()
+      }
 
-    await start()
-    ctx.timeout(process.env.TIMEOUT || 60000)
+      // start the app, if requested
+      const start = noApp
+        ? () => Promise.resolve()
+        : () => {
+            return (
+              ctx.app
+                .start() // this will launch electron
+                // commenting out setTitle due to buggy spectron (?) "Cannot call function 'setTitle' on missing remote object 1"
+                // .then(() => ctx.title && ctx.app.browserWindow.setTitle(ctx.title)) // set the window title to the current test
+                .then(() => waitForSession(ctx, noProxySessionWait))
+                .then(() => ctx.app.client.localStorage('DELETE')) // clean out local storage
+                .then(() => !noProxySessionWait && ui.cli.waitForRepl(ctx.app))
+            ) // should have an active repl
+          }
 
-    if (afterStart) {
-      await afterStart()
+      ctx.timeout(process.env.TIMEOUT || 60000)
+      await start()
+
+      if (afterStart) {
+        await afterStart()
+      }
+    } catch (err) {
+      console.error('error refreshing in before for fresh start', err)
+      throw err
     }
   }
 }
@@ -154,8 +234,8 @@ exports.before = (ctx, { fuzz, noApp = false, popup, afterStart } = {}) => {
  * This is the method that will be called when a test completes
  *
  */
-exports.after = (ctx, f) => () => {
-  if (f) f()
+exports.after = (ctx, f) => async () => {
+  if (f) await f()
 
   //
   // write out test coverage data from the renderer process
@@ -179,63 +259,108 @@ exports.after = (ctx, f) => () => {
   // failed
   if (anyFailed && ctx.app && ctx.app.client) {
     ctx.app.client.getRenderProcessLogs().then(logs =>
-      logs.forEach(log => {
-        if (
-          log.level === 'SEVERE' && // only console.error messages
-          log.message.indexOf('The requested resource was not found') < 0 && // composer file not found
-          log.message.indexOf('Error compiling app source') < 0 &&
-          log.message.indexOf('ReferenceError') < 0 &&
-          log.message.indexOf('SyntaxError') < 0 &&
-          log.message.indexOf('ENOENT') < 0 && // we probably caused file not found errors
-          log.message.indexOf('UsageError') < 0 && // we probably caused repl usage errors
-          log.message.indexOf('Usage:') < 0 && // we probably caused repl usage errors
-          log.message.indexOf('Unexpected option') < 0 // we probably caused command misuse
-        ) {
-          const logMessage = log.message.substring(log.message.indexOf('%c') + 2).replace(/%c|%s|"/g, '')
-          console.log(`${log.source} ${log.level}`.bold.red, logMessage)
-        }
-      })
+      logs
+        .filter(log => !/SFMono/.test(log.message))
+        .forEach(log => {
+          if (
+            log.level === 'SEVERE' && // only console.error messages
+            log.message.indexOf('The requested resource was not found') < 0 && // composer file not found
+            log.message.indexOf('Error compiling app source') < 0 &&
+            log.message.indexOf('ReferenceError') < 0 &&
+            log.message.indexOf('SyntaxError') < 0 &&
+            log.message.indexOf('ENOENT') < 0 && // we probably caused file not found errors
+            log.message.indexOf('UsageError') < 0 && // we probably caused repl usage errors
+            log.message.indexOf('Usage:') < 0 && // we probably caused repl usage errors
+            log.message.indexOf('Unexpected option') < 0 // we probably caused command misuse
+          ) {
+            const logMessage = log.message.substring(log.message.indexOf('%c') + 2).replace(/%c|%s|"/g, '')
+            console.log(`${log.source} ${log.level}`.bold.red, logMessage)
+          }
+        })
     )
   }
 
-  if (ctx.app && ctx.app.isRunning()) {
+  if (ctx.app && ctx.app.isRunning() && ctx._kuiDestroyAfter) {
     return ctx.app.stop()
   }
 }
 
-exports.oops = ctx => err => {
-  if (process.env.MOCHA_RUN_TARGET) {
-    console.log(`Error with mocha target ${process.env.MOCHA_RUN_TARGET}`)
-  }
-  console.log(err)
+exports.oops = (ctx, wait = false) => async err => {
+  try {
+    if (process.env.MOCHA_RUN_TARGET) {
+      console.log(`Error: mochaTarget=${process.env.MOCHA_RUN_TARGET} testTitle=${ctx.title}`)
+    }
+    console.log(err)
 
-  if (ctx.app) {
-    ctx.app.client.getMainProcessLogs().then(logs =>
-      logs.forEach(log => {
-        if (log.indexOf('INFO:CONSOLE') < 0) {
-          // don't log console messages, as these will show up in getRenderProcessLogs
-          console.log('MAIN'.bold.cyan, log)
-        }
-      })
-    )
-    ctx.app.client.getRenderProcessLogs().then(logs =>
-      logs.forEach(log => {
-        if (log.message.indexOf('%c') === -1) {
-          console.log('RENDER'.bold.yellow, log.message.red)
-        } else {
-          // clean up the render log message. e.g.RENDER console-api INFO /home/travis/build/composer/cloudshell/dist/build/IBM Cloud Shell-linux-x64/resources/app.asar/plugins/node_modules/debug/src/browser.js 182:10 "%chelp %cloading%c +0ms"
-          const logMessage = log.message.substring(log.message.indexOf('%c') + 2).replace(/%c|%s|"/g, '')
-          console.log('RENDER'.bold.yellow, logMessage)
-        }
-      })
-    )
+    const promises = []
 
-    ctx.app.client.getText(ui.selectors.OOPS).then(anyErrors => {
-      if (anyErrors) {
-        console.log('Error from the UI'.bold.magenta, anyErrors)
+    if (ctx.app) {
+      try {
+        promises.push(
+          ctx.app.client.getHTML(ui.selectors.OUTPUT_LAST).then(html => {
+            console.log('here is the output of the prior output:')
+            console.log(html.replace(/<style>.*<\/style>/, ''))
+          })
+        )
+        promises.push(
+          ctx.app.client.getHTML(ui.selectors.PROMPT_BLOCK_FINAL).then(html => {
+            console.log('here is the content of the last block:')
+            console.log(html.replace(/<style>.*<\/style>/, ''))
+          })
+        )
+      } catch (err) {
+        console.error('error trying to get the output of the last block', err)
       }
-    })
+
+      promises.push(
+        ctx.app.client.getMainProcessLogs().then(logs =>
+          logs.forEach(log => {
+            if (log.indexOf('INFO:CONSOLE') < 0) {
+              // don't log console messages, as these will show up in getRenderProcessLogs
+              console.log('MAIN'.bold.cyan, log)
+            }
+          })
+        )
+      )
+      promises.push(
+        // filter out the "Not allowed to load local resource" font loading errors
+        ctx.app.client.getRenderProcessLogs().then(logs =>
+          logs
+            .filter(log => !/SFMono/.test(log.message))
+            .forEach(log => {
+              if (log.message.indexOf('%c') === -1) {
+                console.log('RENDER'.bold.yellow, log.message.red)
+              } else {
+                // clean up the render log message. e.g.RENDER console-api INFO /home/travis/build/composer/cloudshell/dist/build/IBM Cloud Shell-linux-x64/resources/app.asar/plugins/node_modules/debug/src/browser.js 182:10 "%chelp %cloading%c +0ms"
+                const logMessage = log.message.substring(log.message.indexOf('%c') + 2).replace(/%c|%s|"/g, '')
+                console.log('RENDER'.bold.yellow, logMessage)
+              }
+            })
+        )
+      )
+
+      promises.push(
+        ctx.app.client
+          .getText(ui.selectors.OOPS)
+          .then(anyErrors => {
+            if (anyErrors) {
+              console.log('Error from the UI'.bold.magenta, anyErrors)
+            }
+          })
+          .catch(() => {
+            // it's ok if there are no such error elements on the page
+          })
+      )
+    }
+
+    if (wait) {
+      await Promise.all(promises)
+    }
+  } catch (err2) {
+    // log our common.oops error
+    console.error('error in common.oops', err2)
   }
+
   // swap these two if you want to debug failures locally
   // return new Promise((resolve, reject) => setTimeout(() => { reject(err) }, 100000))
   throw err
@@ -262,4 +387,14 @@ exports.dockerDescribe = (msg, func) => {
 /** only execute the test in non-proxy browser */
 exports.remoteIt = (msg, func) => {
   if (process.env.MOCHA_RUN_TARGET === 'webpack') return it(msg, func)
+}
+
+/** only execute the test in proxy+browser client */
+exports.proxyIt = (msg, func) => {
+  if (process.env.MOCHA_RUN_TARGET === 'webpack' && process.env.KUI_USE_PROXY === 'true') return it(msg, func)
+}
+
+/** only execute the test in electron or proxy+browser client */
+exports.pit = (msg, func) => {
+  if (process.env.MOCHA_RUN_TARGET !== 'webpack' || process.env.KUI_USE_PROXY === 'true') return it(msg, func)
 }

@@ -1,0 +1,19 @@
+{
+  "rawMode": "raw",
+  "cdUsageTitle": "change working directory",
+  "cdUsageHeader": "Update the current working directory for local filesystem manipulations",
+  "lsUsageTitle": "local file list",
+  "lsUsageHeader": "Directory listing of your local filesystem",
+  "lsDashAUsageDocs": "List all entries except for . and ..",
+  "lsDashaUsageDocs": "Include directory entries whose names begin with a dot (.)",
+  "lsDashcUsageDocs": "Use time when file status was last changed for sorting",
+  "lsDashtUsageDocs": "Sort by time modified (most recently modified first)",
+  "lsDashrUsageDocs": "Reverse the natural sort order",
+  "lsDashSUsageDocs": "Sort files by size",
+  "openUsageTitle": "open file",
+  "openUsageHeader": "View the contents a file",
+  "localFilePath": "local file path",
+  "Please wait while we connect to your cloud": "Please wait while we connect to your cloud",
+  "Could not establish a new session": "Could not establish a new session",
+  "Successfully connected to your cloud. For next steps, try this command: ": "Successfully connected to your cloud. For next steps, try this command: "
+}

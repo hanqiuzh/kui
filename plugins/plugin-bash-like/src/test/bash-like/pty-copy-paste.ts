@@ -18,23 +18,19 @@ import * as common from '@kui-shell/core/tests/lib/common'
 import * as ui from '@kui-shell/core/tests/lib/ui'
 
 import * as assert from 'assert'
-import { dirname, join } from 'path'
 import { readFileSync, unlink } from 'fs'
 import { fileSync as tmpFile } from 'tmp'
 import { promisify } from 'util'
 
 const { cli, keys, selectors } = ui
-const { localDescribe } = common
+const { refresh } = common
 
 /** helpful selectors */
 const rows = (N: number) => selectors.xtermRows(N)
 const firstRow = (N: number) => `${rows(N)} > div:first-child`
 const lastRow = (N: number) => `${rows(N)} > div:last-child`
 
-/** we have a custom vimrc, to make sure INSERT shows up */
-const vimrc = join(dirname(require.resolve('@kui-shell/plugin-bash-like/tests/data/marker.json')), 'vimrc')
-
-localDescribe('xterm copy paste', function(this: common.ISuite) {
+describe(`xterm copy paste ${process.env.MOCHA_RUN_TARGET || ''}`, function(this: common.ISuite) {
   before(common.before(this))
   after(common.after(this))
 
@@ -42,23 +38,23 @@ localDescribe('xterm copy paste', function(this: common.ISuite) {
 
   it(`should echo ${emittedText}`, async () => {
     try {
-      await cli.do(`echo ${emittedText}`, this.app)
+      const res = await cli.do(`echo ${emittedText}`, this.app)
 
       // wait for the output to appear
-      await this.app.client.waitForExist(rows(0))
+      await this.app.client.waitForExist(rows(res.count))
 
+      let idx = 0
       await this.app.client.waitUntil(async () => {
-        const actualText = await this.app.client.getText(firstRow(0))
+        const actualText = await this.app.client.getText(rows(res.count))
+        if (++idx > 5) {
+          console.error('still waiting for emitted text', actualText, res.count)
+        }
         return actualText === emittedText
       })
-    } catch (err) {
-      return common.oops(this)(err)
-    }
-  })
 
-  it('should copy from xterm output and paste outside of xterm', async () => {
-    try {
-      await this.app.client.doubleClick(`${firstRow(0)} > span:first-child`)
+      console.log('now should copy from xterm output and paste outside of xterm')
+
+      await this.app.client.doubleClick(`${firstRow(res.count)} > span:first-child`)
       await this.app.client.execute(() => document.execCommand('copy'))
 
       await this.app.client.click(selectors.CURRENT_PROMPT_BLOCK)
@@ -67,13 +63,13 @@ localDescribe('xterm copy paste', function(this: common.ISuite) {
       await this.app.client.waitUntil(async () => {
         const [actualValue, expectedValue] = await Promise.all([
           this.app.client.getValue(selectors.CURRENT_PROMPT),
-          this.app.client.getText(firstRow(0))
+          this.app.client.getText(rows(res.count))
         ])
 
         return expectedValue === actualValue
       })
     } catch (err) {
-      return common.oops(this)(err)
+      return common.oops(this, true)(err)
     }
   })
 
@@ -83,55 +79,80 @@ localDescribe('xterm copy paste', function(this: common.ISuite) {
 
     try {
       // clear things out
-      await this.app.restart()
+      console.error('CP1')
+      await refresh(this)
 
       // emit some characters to the current prompt
+      console.error('CP2')
       await this.app.client.keys(text)
 
+      // wait for those characters to appear in the prompt
+      console.error('CP3')
+      await this.app.client.waitUntil(async () => {
+        const actualText = await this.app.client.getValue(selectors.CURRENT_PROMPT)
+        return actualText === text
+      })
+
       // copy the content of the current prompt
+      console.error('CP4')
       await this.app.client.doubleClick(selectors.CURRENT_PROMPT)
+      console.error('CP5')
       await this.app.client.execute(() => document.execCommand('copy'))
 
       // cancel out the current prompt so we can execute vi
+      console.error('CP6')
       await this.app.client.keys(ui.ctrlC)
 
       // open vi, so we have an xterm to receive a paste event
-      const res = cli.do(`vi -u "${vimrc}" ${file.name}`, this.app)
+      // the last true means don't try to use the copy-paste optimization
+      console.error('CP7')
+      const res = await cli.do(`vim -i NONE ${file.name}`, this.app, false, true)
 
       // wait for vi to come up in alt buffer mode
+      console.error('CP8')
       await this.app.client.waitForExist(`tab.visible.xterm-alt-buffer-mode`)
 
       // enter insert mode, and wait for INSERT to appear at the bottom
+      console.error('CP9')
       await this.app.client.keys('i')
+      console.error('CP10')
       await this.app.client.waitUntil(async () => {
-        const txt = await this.app.client.getText(lastRow(1))
+        const txt = await this.app.client.getText(lastRow(res.count))
         return /INSERT/i.test(txt)
       })
 
       // now paste into the xterm vi
+      console.error('CP11')
       await this.app.client.execute(() => document.execCommand('paste'))
 
       // escape then :wq
+      console.error('CP12')
       await this.app.client.keys(keys.ESCAPE)
+      console.error('CP13')
       await this.app.client.waitUntil(async () => {
-        const txt = await this.app.client.getText(lastRow(1))
+        const txt = await this.app.client.getText(lastRow(res.count))
         return txt.length === 0
       })
 
+      console.error('CP14')
       await this.app.client.keys(':wq')
+      console.error('CP15')
       await this.app.client.keys(keys.ENTER)
 
-      await res.then(cli.expectBlank)
+      console.error('CP16')
+      await cli.expectBlank(res)
 
+      console.error('CP17')
       await cli.do(`cat ${file.name}`, this.app).then(cli.expectOKWithString(text))
 
       const contents = readFileSync(file.name).toString()
       assert.strictEqual(contents.replace(/[\n\r]$/, ''), text)
+      console.error('CP18')
     } catch (err) {
-      common.oops(this)(err)
+      return common.oops(this, true)(err)
     } finally {
       // DO NOT return a promise here; see https://github.com/mochajs/mocha/issues/3555
-      await promisify(unlink)(file.name)
+      promisify(unlink)(file.name)
     }
   })
 })

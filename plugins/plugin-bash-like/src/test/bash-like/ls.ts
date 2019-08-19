@@ -17,17 +17,57 @@
 import * as common from '@kui-shell/core/tests/lib/common'
 import * as ui from '@kui-shell/core/tests/lib/ui'
 const { cli } = ui
-const { localDescribe } = common
 
-localDescribe('directory listing', function(this: common.ISuite) {
+const echoString = 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'
+
+describe(`directory listing ${process.env.MOCHA_RUN_TARGET || ''}`, function(this: common.ISuite) {
   before(common.before(this))
   after(common.after(this))
+
+  common.proxyIt('should cd to the test dir', () =>
+    cli
+      .do(`cd ${process.env.TEST_ROOT}`, this.app)
+      .then(cli.expectOKWithString('packages/tests'))
+      .catch(common.oops(this, true))
+  )
 
   it('should use ls ../../', () =>
     cli
       .do(`ls ../../`, this.app)
       .then(cli.expectOKWith('package.json'))
       .catch(common.oops(this)))
+
+  // FIXME
+  common.localIt('should ls with semicolons 1', () =>
+    cli
+      .do(`ls ../../ ; echo ${echoString}`, this.app)
+      .then(cli.expectOKWith('package.json'))
+      .catch(common.oops(this))
+  )
+
+  // FIXME
+  common.localIt('should ls with semicolons 2', () =>
+    cli
+      .do(`ls ../../ ; echo ${echoString}`, this.app)
+      .then(cli.expectOKWithString(echoString))
+      .catch(common.oops(this))
+  )
+
+  // FIXME
+  common.localIt('should ls with semicolons 3', () =>
+    cli
+      .do(`ls ../../;; ;; ; ; ;;;;; ;echo ${echoString}`, this.app)
+      .then(cli.expectOKWith('package.json'))
+      .catch(common.oops(this))
+  )
+
+  // FIXME
+  common.localIt('should ls with semicolons 4', () =>
+    cli
+      .do(`ls ../../;; ;; ; ; ;;;;; ;echo ${echoString}`, this.app)
+      .then(cli.expectOKWithString(echoString))
+      .catch(common.oops(this))
+  )
 
   it('should use ls ../../README.md', () =>
     cli
